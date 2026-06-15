@@ -1,0 +1,42 @@
+[project]
+name = "kvrot"
+version = "0.1.0"
+description = "Accurate KV-cache rotation for prefix eviction in long-running / agentic LLM serving"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.26",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+# Real-model measurement harness. Installed on node1 (GPU). Not needed for the
+# CPU correctness tests, which only exercise the rotation math + cache surgery.
+hf = [
+    "transformers>=4.45",
+    "accelerate>=0.34",
+    "safetensors>=0.4",
+]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kvrot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+# --- uv configuration -------------------------------------------------------
+# The dev box has no GPU, so we pin torch to CPU wheels here for a light, fast
+# `uv sync`. node1 installs a CUDA build of torch into its own venv; see NODE1.md.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

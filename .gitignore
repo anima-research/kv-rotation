@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# venv / uv
+.venv/
+uv.lock
+
+# vendor model code (inspected, not committed)
+reference/
+
+# local eval corpus (derived from kotodama training data — rebuild via scripts/sample_eval_corpus.py)
+data/
+
+# experiment outputs
+runs/
+*.pt
+*.npz
+*.json.gz
+results/
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store
