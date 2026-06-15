@@ -24,11 +24,13 @@ naive sink-dropping** — the favourable case. CPU correctness tests prove the r
 bit-exact (26/26 green).
 
 Status: Phase 1 complete on the 3B; **trinity validated at scale** (exp07 decomposition +
-mechanism near-error-free/naive-tolerant; exp08 **recall preserved at scale** — needle in the
-retained tail recalls under rotation ≈ full, 100% top1, evicted needle faithfully dropped; rotation
-surgery clean at 29–52 ms). Committed + pushed to `git@github.com:anima-research/kv-rotation.git`.
-Open: tidy the trinity placement imbalance (accelerate `auto` overloads g7 → small disk offload;
-~600 GiB VRAM headroom unused), then an honest recompute-timing comparison; no vLLM port yet.
+mechanism near-error-free/naive-tolerant; exp08 **recall preserved at scale** — retained needle
+recalls under rotation ≈ full, 100% top1, evicted faithfully dropped; exp08b **clean perf +
+decomposition** on a no-offload load — mech-KL ≤5e-4, rotation closer to full than recompute for
+evicted content at both lengths, warm rotation 29–51 ms vs recompute 20–29 s = ~560–720× in HF
+naive-MP). Committed + pushed to `git@github.com:anima-research/kv-rotation.git`. Trinity feasibility
+is essentially settled; the open frontier is realism (chat-shaped eval), exactness (Tier 3), and the
+production vLLM/TP port (where the true speedup ratio gets measured).
 
 ---
 
@@ -245,17 +247,26 @@ metrics, config, data. `scripts/sample_eval_corpus.py` builds the eval subset on
   drops it (−14/−15). Closes exp07's recall gap. Mem instrumented: `auto` overloads g7 (164/178)
   while g0–g6 sit ~80/178 → small disk offload (imbalance, not capacity); 16k activations +2–4 GiB,
   so huge headroom for longer contexts. Rotation surgery 29–52 ms, GPU-resident.
+- **exp08b** clean perf + decomposition (`--device-map balanced --mem-frac 0.70 --with-recompute`):
+  no disk offload (g7 164→123). Mech-KL ≤5e-4; **rotation closer to full than recompute for evicted
+  content at both lengths** (exp07's 16k flip was the disk-confounded run). Warm rotation 29–51 ms vs
+  GPU-resident recompute 20–29 s = **~560–720×** — but that's HF *naive* model-parallelism (1 GPU at
+  a time); production TP ratio TBD. Cold first-call inflates (240 ms); report warm. Placement lever:
+  cap per-GPU near the even-split, not the max.
 
 ---
 
 ## 9. Next steps (prioritized backlog)
 
-1. **Tidy trinity placement, then broaden** (exp08 follow-ups): (a) **fix the offload imbalance** —
-   accelerate `auto` overloads g7 (164/178) while g0–g6 sit ~80/178; try `device_map="balanced"` or
-   `--mem-frac 0.98` so nothing spills to disk (lots of headroom); (b) THEN one `--with-recompute`
-   cell for the honest rotation-vs-recompute ratio (exp07's was disk-inflated); (c) more lengths
-   (32k/64k — exp08 shows memory is not the constraint) + domains. Recall-preservation itself is
-   DONE (exp08).
+1. **Pick a frontier — trinity feasibility is settled** (exp01–08b: faithful, recall-exact,
+   continuity-preserving, ~3 orders cheaper). Remaining, in rough value order:
+   (a) **Chat-shaped eval** — turn-aligned eviction on multi-turn chat (the real deployment shape;
+       our biggest realism gap — all evals are raw docs). Needs a clean turn-data source.
+   (b) **Longer contexts** (32k/64k/128k toward 256k) — exp08 shows memory is *not* the constraint
+       (~600 GiB free aggregate; use `--device-map balanced --mem-frac 0.70`); stresses SWA-exactness.
+   (c) **Tier 3 selective recompute** — drive drift→0 by recomputing high-deviation survivors, ideally
+       only the 15 global layers. (d) **vLLM/TP port** — the only way to measure the production speedup
+       (HF's ~560–720× is naive model-parallelism).
 2. **Chat-shaped eval** — fetch OASST2 or chat-wrap docs as turns; turn-aligned eviction (the
    real deployment shape). No clean turn-data in kotodama yet.
 3. **Neutral-continuation rerun of exp05** — size the "rotation > recompute for continuity"

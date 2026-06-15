@@ -100,12 +100,14 @@ def load_model(
     tok = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     _ensure_default_rope_init()  # backfill ROPE_INIT_FUNCTIONS['default'] for 4.x remote code
     extra = {"attn_implementation": attn_implementation} if attn_implementation else {}
-    if device_map == "auto" and torch.cuda.is_available():
+    if isinstance(device_map, str) and device_map not in ("cpu", "") and torch.cuda.is_available():
         # Cap per-GPU weight budget from *free* memory (not total). On a shared box other users
         # may already hold VRAM; a fixed fraction of *total* over-promises on a contended GPU,
         # so accelerate spills the unplaceable shards to disk (the exp07 slowdown) or OOMs the
         # forward. Sizing from free adapts to contention and leaves (1-frac) of free for
-        # activations + KV. Run nvidia-smi first and prefer idle GPUs.
+        # activations + KV. A *lower* frac can also fix accelerate imbalance: a high ceiling lets
+        # it overload the last GPU and then offload to disk while early GPUs sit half-empty;
+        # capping nearer the even-split-per-GPU forces a balanced fit. Run nvidia-smi first.
         frac = 0.92 if max_memory_frac is None else max_memory_frac
         mm = {}
         for i in range(torch.cuda.device_count()):

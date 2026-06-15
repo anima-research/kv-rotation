@@ -407,6 +407,51 @@ disk offload is a placement quirk to tidy (before any recompute-timing compariso
 
 ---
 
+## 2026-06-15 — exp08b: clean perf + decomposition (balanced placement, no disk offload)
+
+**Why.** exp08's recall run had a residual disk offload (accelerate overloaded g7) and exp07's
+recompute baseline was disk-inflated. Re-ran exp08 with `--device-map balanced --mem-frac 0.70`
+(lower per-GPU ceiling forces an even fit) + `--with-recompute` to get the HONEST
+rotation-vs-recompute ratio and a clean drift decomposition at evicted (0.40) and kept (0.80) depths.
+
+**Placement fixed:** at 124 GiB/GPU cap, g7 dropped 164→123 GiB, **no disk offload** (g0–g6 71–82,
+g7 123, all ≥55 GiB free). Confirms the offload was accelerate imbalance under a too-generous
+ceiling, not capacity. (Load also fast now — model files page-cached from earlier runs.)
+
+| L | depth | zone | info-loss KL(full‖short) | MECH KL(short‖rot) | total KL(full‖rot) | recall short | recall rot | rot ms | recompute ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 8192  | 0.40 | evicted | 2.47e-3 | 3.82e-4 | 5.15e-4 | −15.4 ❌ | −14.7 ❌ | 240* | 27853 |
+| 8192  | 0.80 | kept    | 1.40e-4 | 2.09e-4 | 1.29e-4 | −0.13 ✅ | −0.12 ✅ | 29   | 20572 |
+| 16384 | 0.40 | evicted | 3.66e-4 | 1.38e-4 | 2.01e-5 | −16.2 ❌ | −15.3 ❌ | 47   | 51202 |
+| 16384 | 0.80 | kept    | 3.23e-4 | 4.71e-4 | 1.36e-4 | −0.11 ✅ | −0.15 ✅ | 51   | 28701 |
+
+(*240 ms = cold first-call autotuning; warm rotation is 29–51 ms. top1 100% in all four cells.)
+
+**Findings.**
+1. **Mechanism error is tiny everywhere** (1.4e-4–4.7e-4) — same order as or below the information
+   loss. Reuse+re-rotate faithfully reproduces a clean GPU-resident recompute, on real data at 389B.
+2. **Rotation is closer to full than recompute for EVICTED content — clean confirmation at both
+   lengths.** total < info-loss at 8k (5.15e-4 vs 2.47e-3, 4.8×) and 16k (2.01e-5 vs 3.66e-4, 18×):
+   survivors carry the evicted block's baked-in influence a fresh recompute discards. exp07's 16k
+   "flip" was the disk-confounded run; the clean numbers show no flip.
+3. **For KEPT needles, rotation ≈ recompute ≈ full** (all ~1e-4) and both recall the fact (short &
+   rotation YES) — the mechanism neither helps nor hurts when the fact is retained, as expected.
+4. **Cost (clean, GPU-resident):** warm rotation 29–51 ms vs recompute 20–29 s → **~560–720×**.
+   ⚠ Two caveats: (a) the first call at each scale is cold (240 ms rotation / inflated recompute from
+   kernel autotuning) — report warm; (b) `device_map="balanced"` is *naive* model parallelism (one
+   GPU active at a time, no tensor parallelism), so the recompute seconds — and thus the ratio — are
+   HF-specific and inflated vs a production TP engine. Robust claim: rotation replaces the entire
+   prefill forward with O(tens-of-ms) tensor surgery (itself an unoptimized Python loop; a fused
+   kernel → ≪ms), so it's orders of magnitude cheaper regardless of serving stack.
+
+**Net (perf story closed):** on a clean no-offload load the mechanism is faithful (mech-KL ≤5e-4),
+continuity-preserving (closer to full than recompute for evicted content, both lengths), recall-exact
+for kept facts, and ~3 orders of magnitude cheaper than the recompute it replaces (HF naive-MP ratio;
+production figure awaits a vLLM/TP port). Placement lever learned: cap per-GPU near the even-split,
+not the max — a *lower* `max_memory_frac` (0.70) eliminates accelerate's offload-inducing imbalance.
+
+---
+
 ## Next
 
 - [x] Continuity probe — done (exp02): retained facts survive; dropping live facts loses them.
@@ -424,11 +469,14 @@ disk offload is a placement quirk to tidy (before any recompute-timing compariso
       — SWA+NoPE is the favourable case). Continuity-beats-recompute held at 8k, flipped at 16k.
 - [x] Trinity recall-preservation at scale — done (exp08): needle at depth 0.80 (retained) recalls
       under rotation (−0.12/−0.15 ≈ full) with 100% top1; depth 0.40 (evicted) faithfully drops it.
-- [~] Clean trinity timing: rotation surgery is clean (29–52 ms, GPU-resident, exp08). The
-      recompute *comparison* still needs the disk offload fixed first (rebalance placement) so the
-      recompute baseline isn't disk-bound — then one `--with-recompute` cell gives the honest ratio.
-- [ ] Fix trinity placement imbalance (exp08): `auto` overloads g7 (164/178) while g0–g6 sit at
-      ~80/178 → small disk offload. Try `device_map="balanced"` or `--mem-frac 0.98`; lots of headroom.
+- [x] Clean trinity timing — done (exp08b): no-offload load, warm rotation 29–51 ms vs GPU-resident
+      recompute 20–29 s → ~560–720× (HF naive-MP ratio; cold first-call inflated). Decomposition also
+      clean: mech-KL ≤5e-4, rotation closer to full than recompute for evicted content at both lengths.
+- [x] Fix trinity placement imbalance — done (exp08b): `--device-map balanced --mem-frac 0.70`
+      (124 GiB/GPU ceiling) → g7 164→123, NO disk offload. Lever: cap near the even-split, not the max.
+- [ ] Production-representative timing: the ~560–720× is HF naive model-parallelism (1 GPU at a time);
+      a tensor-parallel engine (vLLM) recomputes faster → smaller ratio, but rotation stays ~tens of ms.
+      Needs the vLLM port to measure honestly.
 - [ ] Re-check recompact-vs-gap on trinity (θ=10k, no scaling) — exp07 didn't vary it; θ=10k should
       make the positional gap bite sooner than on Llama (exp01).
 - [ ] Realistic eval contexts (agentic transcripts, not synthetic repetition) — exp04 shows

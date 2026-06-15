@@ -152,7 +152,10 @@ def main() -> None:
     ap.add_argument("--sinks", type=int, default=4)
     ap.add_argument("--gen", type=int, default=16)
     ap.add_argument("--mem-frac", type=float, default=0.92,
-                    help="fraction of each GPU's FREE memory to budget for weights")
+                    help="fraction of each GPU's FREE memory to budget for weights (lower can force "
+                         "a balanced fit and avoid disk offload)")
+    ap.add_argument("--device-map", default="auto",
+                    help="accelerate placement: auto | balanced | balanced_low_0 | sequential")
     ap.add_argument("--with-recompute", action="store_true",
                     help="also run the shortened-context recompute as a comparison yardstick")
     args = ap.parse_args()
@@ -161,7 +164,7 @@ def main() -> None:
 
     log(f"loading {args.model} (reads the full model from disk — several minutes for trinity; "
         "watch the 'Loading checkpoint shards' bar)...")
-    lm = load_model(args.model, device_map="auto", max_memory_frac=args.mem_frac)
+    lm = load_model(args.model, device_map=args.device_map, max_memory_frac=args.mem_frac)
     log("model loaded")
     a = lm.arch
     print(f"loaded {args.model}: {a.num_hidden_layers}L ({len(a.sliding_layers)} sliding "
