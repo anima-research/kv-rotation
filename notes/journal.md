@@ -358,6 +358,55 @@ at scale (needle-kept run) and clean GPU-resident timing are the two open follow
 
 ---
 
+## 2026-06-15 — exp08: trinity recall preservation + clean timing (rotation-only, real data)
+
+**Why.** exp07's needle landed in the evicted zone, so it only proved faithful *forgetting*. This is
+the exp02 analog on the real target: sweep the needle across evicted (depth 0.40) and retained
+(depth 0.80) regions and check recall under rotation, with **NO recompute in the measured path**
+(rotation is the object of study; the shortened recompute is behind an opt-in flag, unused here).
+Also instruments per-GPU memory and times the surgery cleanly. `--mem-frac 0.95`, evict 60% after 4
+sinks, real pg19 (doc 0).
+
+| L | needle | zone | recall full | recall rotation | KL(full‖rot) | top1 | rot ms |
+|---|---|---|---|---|---|---|---|
+| 8192  | @0.40 | evicted | −0.13 ✅ | **−14.20 ❌** | 3.31e-4 | 100% | 34 |
+| 8192  | @0.80 | **kept** | −0.09 ✅ | **−0.12 ✅** | 4.20e-5 | 100% | 29 |
+| 16384 | @0.40 | evicted | −0.09 ✅ | **−15.37 ❌** | 1.43e-4 | 100% | 49 |
+| 16384 | @0.80 | **kept** | −0.12 ✅ | **−0.15 ✅** | 6.21e-5 | 100% | 52 |
+
+**Findings.**
+1. **Recall is preserved at scale when the fact is retained — the result exp07 was missing.** Needle
+   in the kept tail (depth 0.80): rotation recall −0.12/−0.15 ≈ full −0.09/−0.12, greedy YES. Popping
+   60% of the prefix + re-rotating survivors does not damage a retained fact, at 389B on real 8k/16k.
+   The trinity analog of exp02 (Llama) now holds.
+2. **Faithful forgetting when evicted** (depth 0.40): rotation −14.2/−15.4, greedy no — correct, you
+   can't recall a dropped fact (matches exp07).
+3. **Distributional drift negligible everywhere:** KL(full‖rotation) 4e-5–3e-4, **top1 100%** in all
+   four cells. KL is ~5× lower when the high-attention needle is retained (4e-5 vs 3e-4) — keeping a
+   salient token makes the continuation more faithful.
+4. **Rotation surgery 29–52 ms**, pure GPU tensor ops (never touches disk) — the clean cost, scaling
+   sub-linearly with kept tokens.
+
+**Memory (the diagnostic the user asked for).** Even at 0.95×free (169 GiB/GPU budget) a small amount
+still offloaded to disk — but it's an accelerate **imbalance, not a capacity wall**: g7 ran hot at
+164/178 GiB while g0–g6 sat at 71–82/178 (95–101 GiB free *each*; ~600 GiB aggregate unused).
+Activations for 16k add only +2–4 GiB (g7 peak 168). ⇒ **context length is nowhere near the memory
+limit** (room for 64k+), and to kill the residual offload we should rebalance placement
+(`device_map="balanced"` or bump to 0.98) rather than raise the cap — g7 is the bottleneck, not total
+VRAM. The earlier "stuck-looking" phase (VRAM held, GPU 0%, load 1.0) was just deserializing ~727 GiB
+from disk single-threaded; not a hang.
+
+**Observability fix.** Piping python through `tee` block-buffers stdout, so our progress prints didn't
+appear until the run ended (the apparent "stuck"). Fixed: run with `PYTHONUNBUFFERED=1`, and exp08 now
+flushes every print + stamps phases with elapsed wall-clock (`[t+…s] …`). The `Loading checkpoint
+shards` tqdm bar already streams load progress to stderr.
+
+**Net:** rotation preserves recall for retained facts (≈ full, 100% top1) and faithfully forgets
+evicted ones, at 389B on real long context — exp07's open gap is closed. Memory headroom is large; the
+disk offload is a placement quirk to tidy (before any recompute-timing comparison), not a wall.
+
+---
+
 ## Next
 
 - [x] Continuity probe — done (exp02): retained facts survive; dropping live facts loses them.
@@ -373,10 +422,13 @@ at scale (needle-kept run) and clean GPU-resident timing are the two open follow
       boundary. Mechanism near-error-free (mech-KL ≤3e-4 ≈ info-loss); rotation 34–48 ms vs
       disk-offloaded recompute 24–42 s; **naive/oldest confirmed safe at scale** (no sink fragility
       — SWA+NoPE is the favourable case). Continuity-beats-recompute held at 8k, flipped at 16k.
-- [ ] Trinity recall-preservation at scale (exp02 analog): needle in the RETAINED tail/sinks
-      (depth > evict-frac) — exp07's needle was evicted, so it only tested faithful forgetting.
-- [ ] Clean (GPU-resident) trinity timing: raise max_memory / avoid disk offload so the recompute
-      baseline isn't disk-bound — to size the true rotation-vs-recompute speedup.
+- [x] Trinity recall-preservation at scale — done (exp08): needle at depth 0.80 (retained) recalls
+      under rotation (−0.12/−0.15 ≈ full) with 100% top1; depth 0.40 (evicted) faithfully drops it.
+- [~] Clean trinity timing: rotation surgery is clean (29–52 ms, GPU-resident, exp08). The
+      recompute *comparison* still needs the disk offload fixed first (rebalance placement) so the
+      recompute baseline isn't disk-bound — then one `--with-recompute` cell gives the honest ratio.
+- [ ] Fix trinity placement imbalance (exp08): `auto` overloads g7 (164/178) while g0–g6 sit at
+      ~80/178 → small disk offload. Try `device_map="balanced"` or `--mem-frac 0.98`; lots of headroom.
 - [ ] Re-check recompact-vs-gap on trinity (θ=10k, no scaling) — exp07 didn't vary it; θ=10k should
       make the positional gap bite sooner than on Llama (exp01).
 - [ ] Realistic eval contexts (agentic transcripts, not synthetic repetition) — exp04 shows

@@ -68,10 +68,13 @@ def load_model(
     device: str | None = None,
     device_map: str | None = None,
     attn_implementation: str | None = None,
+    max_memory_frac: float | None = None,
 ) -> LoadedModel:
     """Load a model + tokenizer. Single-GPU by default (device_map=None → .to(device));
     pass device_map='auto' for sharded models like trinity. Pass
-    attn_implementation='eager' when you need output_attentions (Tier-2 importance)."""
+    attn_implementation='eager' when you need output_attentions (Tier-2 importance).
+    ``max_memory_frac`` (device_map='auto' only) is the fraction of each GPU's *free* memory
+    to budget for weights (default 0.92); the rest is left for activations + KV."""
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -98,10 +101,18 @@ def load_model(
     _ensure_default_rope_init()  # backfill ROPE_INIT_FUNCTIONS['default'] for 4.x remote code
     extra = {"attn_implementation": attn_implementation} if attn_implementation else {}
     if device_map == "auto" and torch.cuda.is_available():
-        # Default 'auto' packs weights to ~full VRAM per GPU and then OOMs in the forward
-        # (no room for activations + KV). Cap per-GPU weight memory to leave headroom.
-        cap = int(torch.cuda.get_device_properties(0).total_memory * 0.80)
-        extra["max_memory"] = {i: cap for i in range(torch.cuda.device_count())}
+        # Cap per-GPU weight budget from *free* memory (not total). On a shared box other users
+        # may already hold VRAM; a fixed fraction of *total* over-promises on a contended GPU,
+        # so accelerate spills the unplaceable shards to disk (the exp07 slowdown) or OOMs the
+        # forward. Sizing from free adapts to contention and leaves (1-frac) of free for
+        # activations + KV. Run nvidia-smi first and prefer idle GPUs.
+        frac = 0.92 if max_memory_frac is None else max_memory_frac
+        mm = {}
+        for i in range(torch.cuda.device_count()):
+            free_i, _total_i = torch.cuda.mem_get_info(i)
+            mm[i] = int(free_i * frac)
+        extra["max_memory"] = mm
+        print("[load] max_memory/GPU (GiB): " + ", ".join(f"{i}:{mm[i] / 2**30:.0f}" for i in mm))
     # Pass our patched cfg so the backfilled attrs take effect. transformers 5.x renamed
     # torch_dtype -> dtype; fall back for older versions.
     try:

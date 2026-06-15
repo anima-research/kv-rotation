@@ -23,10 +23,12 @@ near-error-free (mech-KL ≤3e-4, same tiny order as the information loss), and 
 naive sink-dropping** — the favourable case. CPU correctness tests prove the rotation math is
 bit-exact (26/26 green).
 
-Status: Phase 1 complete on the 3B; **trinity validated at scale** (exp07: mechanism near-error-free,
-naive-tolerant, 34–48 ms rotation). Two trinity follow-ups owed: a recall-preservation run (exp07's
-needle was evicted, not kept) and clean GPU-resident timing (exp07's recompute baseline was
-disk-offload-inflated). Not yet committed to git (waiting on user). No production/vLLM port yet.
+Status: Phase 1 complete on the 3B; **trinity validated at scale** (exp07 decomposition +
+mechanism near-error-free/naive-tolerant; exp08 **recall preserved at scale** — needle in the
+retained tail recalls under rotation ≈ full, 100% top1, evicted needle faithfully dropped; rotation
+surgery clean at 29–52 ms). Committed + pushed to `git@github.com:anima-research/kv-rotation.git`.
+Open: tidy the trinity placement imbalance (accelerate `auto` overloads g7 → small disk offload;
+~600 GiB VRAM headroom unused), then an honest recompute-timing comparison; no vLLM port yet.
 
 ---
 
@@ -139,12 +141,24 @@ ssh node1 'cd ~/luxi-files/kv-rotation && CUDA_VISIBLE_DEVICES=1 PYTHONPATH=src 
 
 # trinity (ALL 8 GPUs, device_map=auto; check nvidia-smi is free first!):
 ssh node1 'cd ~/luxi-files/kv-rotation && PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  PYTHONPATH=src HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ~/luxi-files/.venv-shared/bin/python \
-  experiments/exp07_trinity_matrix.py --lengths 8192 16384'
+  PYTHONUNBUFFERED=1 PYTHONPATH=src HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  ~/luxi-files/.venv-shared/bin/python experiments/exp08_trinity_recall.py --lengths 8192 16384'
 ```
 Run long jobs in the background and read the output file on completion (filter the
 `Loading weights`/`it/s]` progress-bar spam with `grep -avE`). **Always `nvidia-smi` before
 grabbing all 8 GPUs** — others use this box.
+
+Gotchas learned (exp08):
+- **Buffering:** piping python through `tee`/a file block-buffers stdout, so `print()` progress is
+  invisible until the run ends (looks "stuck"). Always set `PYTHONUNBUFFERED=1`; exp08 also flushes
+  + stamps phases `[t+…s]`. Loading a ~727 GiB model from disk is single-threaded (GPU 0%, load 1.0)
+  and takes minutes — watch the `Loading checkpoint shards` bar; that's normal, not a hang.
+- **Memory:** trinity weights ≈ 727 GiB on-GPU; `device_map="auto"` places them **imbalanced** (g7
+  ~164/178, g0–g6 ~80/178), causing a small disk offload even at `--mem-frac 0.95`. It's imbalance,
+  not capacity — ~600 GiB free aggregate; 16k activations add only +2–4 GiB. For long contexts /
+  clean recompute timing, rebalance (`device_map="balanced"` or `--mem-frac 0.98`) first.
+- The `max_memory` cap is now sized from each GPU's **free** memory (`load_model(max_memory_frac=…)`,
+  default 0.92), so it adapts to contention on the shared box instead of over-promising.
 
 ---
 
@@ -226,17 +240,22 @@ metrics, config, data. `scripts/sample_eval_corpus.py` builds the eval subset on
   (mech-KL ≤3e-4 ≈ info-loss); **naive/oldest safe at scale** (no sink fragility); rotation
   34–48 ms vs disk-offloaded recompute 24–42 s. Needle was evicted → tested forgetting, not recall;
   continuity-beats-recompute held at 8k, flipped at 16k (evicted block too stale to matter).
+- **exp08** trinity recall sweep (rotation-only): needle at depth 0.80 (**retained**) recalls under
+  rotation (−0.12/−0.15 ≈ full) with 100% top1 and KL 4–6e-5; depth 0.40 (**evicted**) faithfully
+  drops it (−14/−15). Closes exp07's recall gap. Mem instrumented: `auto` overloads g7 (164/178)
+  while g0–g6 sit ~80/178 → small disk offload (imbalance, not capacity); 16k activations +2–4 GiB,
+  so huge headroom for longer contexts. Rotation surgery 29–52 ms, GPU-resident.
 
 ---
 
 ## 9. Next steps (prioritized backlog)
 
-1. **Trinity recall + clean timing** (top priority, exp07 follow-ups): (a) recall-preservation run
-   with the needle in the RETAINED region (depth > evict-frac, or in sinks) — exp07's needle was
-   evicted, so it only tested faithful forgetting; (b) GPU-resident rerun (raise `max_memory`, avoid
-   disk offload) so the recompute baseline isn't disk-bound — to size the true speedup; (c) more
-   lengths (32k/64k) + domains. exp07 already showed the mechanism is near-error-free and
-   naive-tolerant at scale.
+1. **Tidy trinity placement, then broaden** (exp08 follow-ups): (a) **fix the offload imbalance** —
+   accelerate `auto` overloads g7 (164/178) while g0–g6 sit ~80/178; try `device_map="balanced"` or
+   `--mem-frac 0.98` so nothing spills to disk (lots of headroom); (b) THEN one `--with-recompute`
+   cell for the honest rotation-vs-recompute ratio (exp07's was disk-inflated); (c) more lengths
+   (32k/64k — exp08 shows memory is not the constraint) + domains. Recall-preservation itself is
+   DONE (exp08).
 2. **Chat-shaped eval** — fetch OASST2 or chat-wrap docs as turns; turn-aligned eviction (the
    real deployment shape). No clean turn-data in kotodama yet.
 3. **Neutral-continuation rerun of exp05** — size the "rotation > recompute for continuity"
