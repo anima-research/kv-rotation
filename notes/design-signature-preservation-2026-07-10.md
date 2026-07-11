@@ -107,11 +107,25 @@ Per cell, per condition c ∈ {ROT, REC, NAIVE}: **Δ_c = sig(c) − sig(FULL)**
    distances reported as ratios to floor (b).
 4. **Sensitivity control:** d_NAIVE must exceed floor by ≥10× for the cell to count toward
    null interpretation (decision rule below).
-5. **Direction consistency (PRIMARY small-magnitude test, basis-free):** across cells, the mean
-   pairwise cosine between per-cell Δ_REC vectors (and separately Δ_ROT), against the same
-   statistic computed on floor deltas (permutation null). "Recompute drifts in a *systematic*
-   direction across cells; rotation's residual doesn't" — answers P3's spirit without assuming
-   any privileged basis.
+5. **Fade vs nonsense (PRIMARY small-magnitude characterization — amended 2026-07-10, second
+   round with Luxia).** Frame: the signature is the WHOLE character of the computation relative
+   to this generation; modes/topics/traits are nested stakes within it and exp11 has no specific
+   stake to look for. So where ROT/REC are NOT equivalent, characterize the excess with the
+   cell's own geometry, anchored at FULL — no external basis:
+   a. **Colinearity:** cos(Δ_ROT, Δ_REC) per cell. High cosine = same fade, different magnitude
+      (Δ_REC ≈ λ·Δ_ROT, λ>1 — recompute is a lower-fidelity version of the same computation).
+      Low cosine = deviation different in kind (orthogonal excess).
+   b. **Fade curve:** on 2 dialogue + 1 doc cells, sweep evict-frac ∈ {0.25, 0.5, 0.75} for ROT
+      and REC; trace the signature trajectory. Fade = deviations grow monotonically along a
+      common direction (project each Δ(ef) onto the ef=0.75 direction; monotone magnitude,
+      colinearity high). Nonsense = direction scatters as magnitude grows.
+   c. **Stability:** a fade replicates — repeat the replay, Δ direction holds vs floor.
+   d. **NAIVE placement (diagnostic, beyond the P5 gate):** is damage ON the fade axis
+      (instrument sees all forgetting as one thing) or OFF it (instrument distinguishes graceful
+      forgetting from corruption)? Either is informative; report the cosine.
+5c. **Cross-cell direction consistency (SECONDARY):** mean pairwise cosine between per-cell
+   Δ_REC (and Δ_ROT) vs the floor-delta null. Demoted (same round): it assumes cells share a
+   drift direction, which mixes content into a per-generation quantity.
 5b. **Mode-space projection (EXPLORATORY — amended 2026-07-10 after Luxia's challenge):**
    operationalized precisely: Δz = (sig_c − sig_FULL) ⊘ FULL_scale (means cancel in the
    difference); project onto the orthonormalized rows of FULL_W (the 4-dim LDA subspace
@@ -141,14 +155,18 @@ Per cell, per condition c ∈ {ROT, REC, NAIVE}: **Δ_c = sig(c) − sig(FULL)**
 - **P4:** effects concentrate in T2.5 + T2, not T1 logit stats.
 - **P5 (new, sensitivity):** d_NAIVE ≫ floor (≥10×) in every cell. If P5 fails, the experiment
   reports "instrument cannot see cache damage in this regime" and NO null conclusions are drawn.
-- **P6 (new, direction — amended):** where Δs are small, Δ_REC is more *direction-consistent*
-  across Regime-A cells than Δ_ROT (metric 5) — recompute drifts somewhere systematic;
-  rotation's residual is unstructured. The mode-space projection (metric 5b) is exploratory
-  color on top: if it beats its nulls, we additionally get to say WHICH character direction.
+- **P6 (amended, second round):** where ROT/REC are not equivalent, the excess is a FADE, not
+  nonsense: cos(Δ_ROT, Δ_REC) high (metric 5a), fade-curve monotone along a common direction
+  (5b-curve), stable under replication (5c-stability). i.e., recompute is a lower-fidelity
+  rendering of the same computation — "tracing the fade toward full rather than nonsense."
+  Mode-space projection (metric 5b-projection) stays exploratory color only.
 
 **Decision rules:** paired Wilcoxon p<0.05 over Regime-A cells for P1; "≈ floor" means <3× floor
-(b); the boring-null verdict ("both preserve character to instrument precision") requires P5 to
-hold AND both d_ROT, d_REC < 3× floor across ≥ 10/12 cells.
+(b). **Equivalence is an affirmative claim (TOST-style):** ROT ≡ REC at instrument precision iff
+P5 holds AND |d_ROT − d_REC| < 2× floor (b) in ≥ 10/12 cells — reported as "equivalent within
+margin," never as "no difference found." The boring-null verdict additionally requires both
+d_ROT, d_REC < 3× floor across ≥ 10/12 cells. Non-equivalent cells proceed to the fade-vs-
+nonsense characterization (metric 5) and the P3 dissociation check.
 
 ## Known confounds & mitigations (registry)
 
