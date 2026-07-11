@@ -347,3 +347,135 @@ p=0.125) was already seen, the new cells form an INDEPENDENT confirmatory set:
   the v3 extraction path produces per-generation aggregates from transient per-step
   raw; banking per-step vectors would require new extraction surgery (per-step raw is
   ~3.4 GB/condition), skipped per instruction.
+
+---
+
+## Family decomposition (same night)
+
+> Follow-up analysis (local CPU, no GPU): `experiments/exp11_family_decomp.py` →
+> `runs/exp11_family_decomp.{json,log}`; unit tests `tests/test_exp11_family_decomp.py`
+> (13, all green; full suite 102). Question (Luxia): the per-tier table above says "the
+> effect lives in T3" — but T3 is 1,250/2,713 dims, and tiers are lossy groupings. Does
+> T3 carry the ROT-vs-REC separation by its own per-feature weight, or by pure feature
+> mass? Method recovered from the anamnesis June-15 machinery
+> (`anamnesis-pl/analysis/v3_audit/`: `feature_decomp.py` standalone/LOFO/removal-cost,
+> `surface_fusion_loso.py` unique-vs-redundant, `feature_map.py` source×method×depth
+> vocabulary), adapted to n=12 paired cells: everything is a training-free recomputation
+> of paired distances on feature subsets, with exact sign-flip enumeration (2^n) as the
+> inference. **No encoders:** the banked grid stores one aggregate signature per
+> condition per cell (per-step rows were never banked — see the n-boost block's note:
+> banking them needs new extraction surgery, ~3.4 GB/condition raw), and n=12 cannot
+> support cell-level encoder CV.
+
+**Mass correction.** All statistics in standardized space Δz = (sig_c − sig_FULL) ⊘
+FULL_scale (calibration per-feature std from `factor_directions_3b.npz`; hard
+FULL_names alignment assert; 0 degenerate scale entries). Family statistic = RMS =
+‖Δz_F‖/√|F| — a per-feature mean, so a 1,250-feature family cannot win by count; family
+size n is reported in every table. Gap statistic = per-cell log2(RMS_REC/RMS_ROT);
+per-family floors = the same RMS on that family's FLOOR_B (path-floor) delta.
+
+**Standardized headline (whole signature, mass-corrected).** The caveat-1 registered
+follow-up, now done: pooled standardized gap is REC-further in 8/8 dialogue
+(p=0.0039), 9/12 pooled (p=0.0125); doc alone ns (1/4). The NAIVE colinearity
+survives standardization — cos(Δz_NAIVE, Δz_ROT) median 0.96 (dlg) / 0.95 (doc) — but
+the "REC orthogonal" half softens: cos(Δz_NAIVE, Δz_REC) = 0.79/0.82 standardized (the
+raw ≈0 was partly gate-scale artifact). The ordering NR ≫ NE holds everywhere; the
+sharp discrimination is family-local (below).
+
+**Mass-corrected family ranking** (median log2(RMS_REC/RMS_ROT), dialogue n=8; * =
+exact sign-flip p < 0.05 after Holm within grouping; ×floor = family RMS as multiple
+of that family's own FLOOR_B RMS, median over cells):
+
+| family (tier vocab) | n | dlg gap | cells | ×floor ROT→REC | cos(NAI,ROT) | cos(NAI,REC) |
+|---|---|---|---|---|---|---|
+| **T3** | 1250 | **+1.23*** | 8/8 | 7→15 | 0.97 | **0.15** |
+| T2.5 | 142 | +0.47* | 8/8 | 105→138 | 0.94 | 0.75 |
+| attention_flow | 329 | +0.43* | 8/8 | 36→44 | 0.92 | 0.66 |
+| gate | 289 | +0.25* | 7/8 | 2.7→2.9 | 0.85 | 0.28 |
+| residual_traj | 205 | +0.24* | 5/8 | 8.5→10 | 0.97 | 0.46 |
+| T1 | 221 | +0.11 | 5/8 | 7→8 | 0.98 | 0.06 |
+| T2_spectral | 28 | +0.08* | 8/8 | 31→36 | 1.00 | 0.97 |
+| per_head | 56 | +0.00 | 4/8 | 156→158 | 0.91 | 0.83 |
+| T2_other | 193 | −0.07 | 1/8 | 94→91 | 0.99 | 0.96 |
+
+**T3 verdict: it carries by its own weight.** Per-feature, T3's REC-excess is the
+largest of any tier family (+1.23 log2 ≈ REC 2.3× ROT per feature, 12/12 pooled
+p=0.0002 — mass correction cannot produce this; every statistic is a per-feature
+mean). It is also the most robust: re-running the whole ranking with a floor-based
+per-feature scale (each feature in units of its own FLOOR_B replay noise) leaves T3 at
++1.22 (12/12, p=0.0002) while every other tier family collapses to ≈0. Internally the
+effect is depth-structured (mid-late PCA layers L14/L21/L24 at +1.3–1.5, L7 at +0.66)
+and present at all five snapshots (t0 largest, +1.40); top single features are
+first-snapshot mid-layer components (pca_L14_t0_c11/c30, 11–12/12 cells). BUT — the
+LOFO says T3 is sufficient, not necessary: the separation without T3 is still
+significant (+0.11, 9/12, p=0.0146), and T3 alone carries it fully (12/12, p=0.0002).
+The June-15 pattern exactly: the strongest single family encodes the contrast along
+its own directions, but the signal is redundantly present elsewhere.
+
+**The finer-than-tier vocabulary is where it gets good** (feature_map source axis —
+the tiers were hiding two small strong families):
+
+| source | n | dlg gap | pooled | floor-ruler gap | reading |
+|---|---|---|---|---|---|
+| **keys** | 79 | **+1.38*** | +1.19* (10/12) | +0.94 (9/12, p=0.006) | pre-RoPE key geometry — per-feature the LARGEST gap of any group |
+| **output** | 25 | +0.87* | +0.78* (12/12) | +1.32 (10/12, p=0.002) | logit/entropy stats — T1's signal, diluted 196:25 inside the tier |
+| residual | 1760 | +0.33* | +0.29* | +0.00 (10/12) | T3 + trajectories; late band +1.09, early band 0/8 |
+| gate | 289 | +0.25* | +0.25* | +0.00 (8/12) | mid/late sparsity dynamics |
+| attention | 560 | +0.13* | +0.08* | −0.00 (0/12) | attention reads move hugely under eviction (70–114× floor) but symmetrically — they measure eviction, not contamination |
+
+The tier view called T2.5 "moderate"; the source split shows why: T2.5 = 79
+key-geometry features (kv_/epoch_) with a big per-feature gap (kv_key_novelty_mean_L7,
+kv_key_spread_L7, kv_key_eff_dim_L7/L14 — 11–12/12 cells each) + 63 cache-profile
+attention reads with none (the tier's biggest raw excesses are the mechanically-flagged
+cache_recency_L27 group). Mechanistically clean: ROT's cache keeps FULL's survivor
+key/value content exactly, so REC's recomputed-context influence shows up in the
+continuation's key-content geometry. Same story inside T1: the 25 output-source
+features carry a real gap, the 196 activation-norm features dilute it below
+significance. Method axis: geometry (+0.81*) ≫ distributional (+0.14*) ≫ magnitude
+(−0.08, ns). Depth: mid/late everywhere; early bands are dead (residual/early 1/8,
+attention/early 0/8).
+
+**Per-family NAIVE axis: NOT uniform, and the non-uniformity is the finding.**
+cos(Δz_NAIVE, Δz_ROT) is high in every family (0.84–1.00) — NAIVE and ROT are the same
+deformation everywhere. cos(Δz_NAIVE, Δz_REC) spans 0.06→0.97: the families that
+carry the magnitude gap are exactly the ones where REC leaves the NAIVE/ROT axis (T1
+0.06, T3 0.15, gate 0.28, residual_traj 0.46, keys 0.70), while the no-gap families
+(T2_other 0.96, T2_spectral 0.97, per_head 0.83) see all three conditions as one
+shared eviction direction. The headline "contamination axis" is therefore not a global
+property of the signature — it is localized to residual-PCA geometry, key-content
+geometry, logit statistics, and gate dynamics, and invisible to the attention-read
+families. Doc cells show the same NR-high pattern with weaker gap significance (n=4;
+only T3 and output reach the sign-test floor p=0.0625 there).
+
+**Honest caveats.** (1) Any pooled RMS over a heterogeneous subset is still dominated
+by its largest-standardized-magnitude members — that's why "without T2.5" dips to
+p=0.097 in the LOFO (the complement keeps the no-gap giants per_head/T2_other): read
+the family-alone column, and the floor-ruler robustness, as the clean per-family
+evidence. (2) doc-regime gaps are mostly ns at n=4 (sign-test floor 0.0625). (3) This
+analysis is post-hoc relative to the pre-registered grid (the standardize-then-pool
+follow-up was registered in caveat 1; the family vocabulary is the anamnesis-standard
+one, not chosen on this data). (4) Feature-level excess rankings use FULL_scale units;
+mechanical (length-sensitive) features are counted per family in every table (T2.5:
+49, attention_flow: 126) and dominate T2.5's raw excess list.
+
+**One paragraph, the direct answer.** Is T3 carrying by its own weight? Yes — with the
+mass question now answered in both directions. Per feature, T3's REC-vs-ROT excess is
+the largest of any tier family and the only tier-level one that survives measuring
+every feature against its own replay-noise floor (+1.22 log2, 12/12, p=0.0002); its
+1,250-dim mass is not the source of its ranking, and the effect has structure
+(mid-late layers, all snapshots, REC ≈ 2.3× ROT per feature). But T3 is not the sole
+carrier: the finer vocabulary finds the same contamination signature, at equal or
+larger per-feature strength, in two small families the tiers were hiding — 79 pre-RoPE
+key-geometry features (+1.38 dlg, the largest per-feature gap anywhere) and 25 logit
+statistics (+0.87) — and LOFO confirms the separation survives T3's removal entirely.
+The instrument's contamination axis is redundantly encoded across residual geometry,
+key content, and output statistics — T3 is its loudest, most robust reader, not its
+container.
+
+**Encoder variant + next data.** Not run, by justification: the banked grid is
+aggregate-only and n=12 cells cannot support cell-level encoder CV; per-step banking
+is new extraction surgery (~3.4 GB/condition raw — see the n-boost registration
+block), so it stays a Luxia-decision, not a same-night add. The already-registered
+n-boost (12 confirmatory dialogue cells) is the cheap n-raise for THIS analysis too:
+`exp11_family_decomp.py` reruns as-is on the boost/pooled grid, and n=20 dialogue
+cells lowers the per-family sign-test floor from 0.0039 to ~1e-6.
