@@ -320,3 +320,30 @@ local: `runs/exp11_{grid,stage1,analysis}.json`, logs, probe logs
 anamnesis-pl staged read-only at `node1:~/luxi-files/anamnesis-pl-exp11` (the
 existing `~/luxi-files/anamnesis-pl` with prior results untouched). Session note:
 the local VPN dropped twice; nohup chains unaffected.
+
+---
+
+## n-boost confirmatory set (REGISTERED BEFORE GENERATION — this commit is the timestamp)
+
+Luxia-approved n-raise for P1's registered test. Because the n=8 result (one-sided
+p=0.125) was already seen, the new cells form an INDEPENDENT confirmatory set:
+
+- **Data:** 12 new 3B-native dialogue conversations, fresh hand-written openers
+  (12 new topics), fresh seed range continuing the sequence — generator `--seed 2034`,
+  conv_idx 0..11 ⇒ per-turn seeds (2034+conv)*1000+turn, disjoint from the main run's
+  (2026+conv)*1000+turn, conv 0..7. Same generation protocol (vLLM backend, same
+  server recipe, temperature 0.9 / top_p 0.95, ~340-tok cap with sentence trim,
+  target ≥4800 rendered tokens), banked to `data/native3b_convs_boost_2026-07-10.jsonl`.
+- **Cells:** same cell protocol as the main run — ef=0.5, N=256 frozen greedy
+  continuation from FULL, all four conditions (FULL/ROT/REC/NAIVE) + floors (a),(b),
+  per-cell P5 check; no evict-frac sweep (confirmatory cells are base-ef only).
+  Driver unchanged; gate not re-run (bridge byte-identical, gate was bit-exact).
+- **CONFIRMATORY TEST (primary):** paired one-sided Wilcoxon, d_ROT < d_REC over the
+  12 NEW cells alone; rule p<0.05.
+- **Secondary (same statistics as the main run, on the new cells alone):** tier3
+  scale-free cos-dist ROT<REC count + paired Wilcoxon; token-KL(FULL‖ROT) <
+  token-KL(FULL‖REC) count. Pooled 20-cell results reported secondarily.
+- **Not done here:** per-step feature banking for the family-decomposition thread —
+  the v3 extraction path produces per-generation aggregates from transient per-step
+  raw; banking per-step vectors would require new extraction surgery (per-step raw is
+  ~3.4 GB/condition), skipped per instruction.
