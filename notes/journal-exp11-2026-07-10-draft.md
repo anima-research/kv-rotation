@@ -75,10 +75,51 @@ TBD after run.
 - **Feature-name alignment:** hard-asserted per condition per cell, and against
   FULL_names for the exploratory mode projection.
 
+## Generation stage (Regime-A substrate) — the shape-toll saga
+
+Three generator iterations before the substrate could be built at acceptable speed
+(all measured, all banked in `runs/probe_decode.log`, `runs/probe2.log`,
+`runs/probe3_{default,expandable}.log`, smoke logs):
+
+1. **Manual per-token nucleus loop: 2–9 tok/s.** Per-token full-vocab CPU sort +
+   sync transfers. Killed after coordinator flagged the rate.
+2. **HF `model.generate` (sdpa): 50.9 tok/s at a WARM shape — but node1's
+   torch-2.11-cu128/B200 stack pays a shape-keyed kernel toll: the FIRST forward at
+   any new prefill length runs at ~2.6 tok/s regardless of
+   PYTORCH_CUDA_ALLOC_CONF=expandable_segments (probe3: both arms identical → not
+   allocator growth; recurs at every fresh length → not one-time warmup). Bucket-
+   padding prompts to 512 multiples recovered warm-bucket turns (55.9 tok/s) but
+   fresh buckets still cost ~90–100 s because the toll ALSO applies per fresh decode
+   kv-length — effective ~10 tok/s, under the 30 tok/s bar set by Luxia's directive.
+3. **vLLM 0.16 server from the existing `kimi` conda env** (activation authorized by
+   Luxia — activation only, zero installs; port 8011, gpu-mem-util 0.30, one GPU):
+   **~355 tok/s per turn**, whole 8-conversation generation in 116 s. Prompts sent
+   as TOKEN IDS (client renders with the same tokenizer the replay model uses);
+   returned `token_ids` taken from the response (`return_token_ids` verified);
+   per-turn API seed; silent-greedy guard passed (two seeds → different outputs);
+   server torn down after generation, GPU verified drained.
+
+Result: `data/native3b_convs_2026-07-10.jsonl` — 8 conversations, 15–19 turns,
+renders 4,814–5,424 tokens, 4,690–5,325 generated tokens each. 3 of ~124 generated
+turns flagged `retok_mismatch` (leading-whitespace strip; banked text is the render
+canon, raw sampled ids are provenance). All turns hit the 340-token cap and were
+sentence-trimmed — 3B rambles; turns are uniform ~340 tokens rather than the spec's
+150–300 (noted, harmless: content is 3B-native by construction).
+
 ## Correctness gate (Stage 1)
 
-TBD — injected-FULL-cache replay vs `replay_extract` use_cache=False on the same
-tokens, full v3 feature vectors, rtol 1e-4 / atol 1e-6.
+**PASS — bit-exact.** Injected-FULL-cache replay vs `replay_extract` use_cache=False
+on the same tokens (ctx 2,210 = cut of n3b-00, cont 256): all 2,713 features
+IDENTICAL (max_abs_diff = 0.0, 0 violations at rtol 1e-4/atol 1e-6, names equal).
+The injection path (explicit position_ids/cache_position + DynamicCache) is not a
+signature perturbation at all on this stack. 16 s.
+
+Smoke cell (dlg-n3b-00, P=4,832, full condition set + sweep + repeats, ~2 min):
+- FLOOR_A = 0.0 exactly (batched replay is deterministic — spec confound #5 verified);
+- FLOOR_B (path floor) = 1.0402, KL floor 1.67e-4 — nonzero, ratio framing sound;
+- **P5 PASS: d_NAIVE = 45.07 = 43.3× path floor** (need ≥10×);
+- stability repeats bit-identical (ROT/REC d reproduced to 4+ decimals);
+- fade curves monotone for both ROT and REC (12.3→40.6→87.5 / 23.0→33.9→58.0).
 
 ## Results
 
