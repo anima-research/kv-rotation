@@ -17,6 +17,15 @@ hf = [
     "accelerate>=0.34",
     "safetensors>=0.4",
 ]
+# exp11 signature bridge: everything the anamnesis-pl import needs beyond `hf`.
+# (anamnesis-pl itself is NOT a dependency — it is imported from a local checkout
+# via PYTHONPATH / --anamnesis-path; see src/kvrot/sigbridge.py.)
+sig = [
+    "transformers>=4.45",
+    "accelerate>=0.34",
+    "safetensors>=0.4",
+    "scipy>=1.11",
+]
 dev = ["pytest>=8.0"]
 
 [build-system]
