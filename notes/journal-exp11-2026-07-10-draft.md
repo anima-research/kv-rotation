@@ -479,3 +479,42 @@ block), so it stays a Luxia-decision, not a same-night add. The already-register
 n-boost (12 confirmatory dialogue cells) is the cheap n-raise for THIS analysis too:
 `exp11_family_decomp.py` reruns as-is on the boost/pooled grid, and n=20 dialogue
 cells lowers the per-family sign-test floor from 0.0039 to ~1e-6.
+
+### n-boost results (run after the registration block above; artifacts
+### `runs/exp11_boost.{json,log}`, `runs/exp11_{boost,pooled}_analysis.json`,
+### `data/native3b_convs_boost_2026-07-10.jsonl`)
+
+Generation: 12/12 conversations (n3bb-00..11, fresh topics/openers, seeds
+(2034+conv)*1000+turn), 15–17 turns, renders 4,837–5,471 tokens, 181 s total via
+the same vLLM recipe — this time at gpu-memory-utilization 0.10 because another
+tenant's job now holds ~162 GB on ALL 8 GPUs (~21 GB free each; the registered
+0.25 could not fit — adaptation noted). Sampling guard passed; 2 retok_mismatch
+turns; server torn down after generation. Cells: 12/12 clean, ~57 s/cell
+(GPU shared with the tenant job), **P5 12/12** (14.3–49.0× path floor).
+
+**CONFIRMATORY TEST (registered): P1 CONFIRMED on the independent set.**
+Paired one-sided Wilcoxon d_ROT < d_REC over the 12 NEW cells alone:
+**p = 0.0261** (< 0.05 rule; d_ROT < d_REC in 8/12 cells; d_ROT 21.5–44.6 =
+14.1–48.5× floor, d_REC 21.4–86.2 = 14.6–88.9× floor).
+
+Registered secondaries, new cells alone:
+- tier3 scale-free cos-dist ROT < REC: **12/12**, paired one-sided p = 0.00024;
+- token-KL(FULL‖ROT) < token-KL(FULL‖REC): **12/12** (means 4.2e-3 vs 2.0e-2).
+
+Structure replicates exactly: cos(Δ_NAIVE, Δ_ROT) = 0.979–0.995 in all 12 new
+cells; cos(Δ_ROT, Δ_REC) median 0.024 (the contamination-axis geometry of the
+main run, reproduced on fresh content and fresh seeds).
+
+Pooled (secondary): dialogue n=20 one-sided p = 0.0181; all 24 cells p = 0.0029
+(d_ROT < d_REC 18/24); tier3 23/24 (p ≈ 3e-7); token-KL 24/24.
+
+**Amended P1 verdict: CONFIRMED** — not on the original n=8 set (p=0.125, seen
+before registration of the boost), but on the pre-registered independent
+confirmatory set (p=0.0261), with both registered secondaries unanimous. The
+signature instrument agrees with the behavior instrument: eviction+re-rotation
+stays closer to the full-context computation than recompute does, on 3B-native
+dialogue, at ef=0.5, over a frozen 256-token continuation.
+
+Machine state (boost): all our processes exited; vLLM server torn down after
+generation; GPUs hold only the other tenant's job (~162 GB each, present before
+and after our run, untouched). Artifacts rsynced local.
