@@ -42,6 +42,7 @@ import builtins
 import functools
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -357,6 +358,111 @@ class PersonaTurnGenerator:
         return text, len(gen_ids), gen_ids
 
 
+class VllmTurnGenerator:
+    """vLLM-backed turn generation (OpenAI /v1/completions on a LOCAL server).
+
+    Added 2026-07-10 after the HF path's shape-toll saga (see PAD_BUCKET note):
+    Luxia authorized ACTIVATING an existing conda env (kimi, vllm 0.16) to serve
+    the 3B — activation only, never installs. The prompt is sent as TOKEN IDS
+    (rendered client-side with the same tokenizer the replay model uses), so there
+    is no client/server tokenization drift on the input side. Returned token ids
+    are taken from the response when the server provides them (return_token_ids)
+    and otherwise re-derived by encoding the returned text — either way the
+    retok-identity guard in the growth loop flags any drift. Seeds ride the API
+    `seed` param (recorded; banked ids remain the ground truth).
+
+    Interface-compatible with PersonaTurnGenerator (generate / warmup /
+    last_timing / eos_ids / max_new_tokens / .lm.tokenizer).
+    """
+
+    def __init__(self, tokenizer, *, base_url: str, model: str, max_new_tokens: int,
+                 temperature: float, top_p: float, timeout_s: float = 300.0) -> None:
+        import types
+
+        self.lm = types.SimpleNamespace(tokenizer=tokenizer, device=None)
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.timeout_s = timeout_s
+        eos: set[int] = set()
+        if tokenizer.eos_token_id is not None:
+            eos.add(int(tokenizer.eos_token_id))
+        for t in ("<|eot_id|>", "<|end_of_text|>", "<|eom_id|>"):
+            try:
+                i = tokenizer.convert_tokens_to_ids(t)
+            except Exception:
+                i = None
+            if i is not None and i >= 0 and i != getattr(tokenizer, "unk_token_id", None):
+                eos.add(int(i))
+        self.eos_ids = eos
+
+    def warmup(self) -> float:
+        return 0.0  # server-side; nothing to absorb client-side
+
+    def _post(self, body: dict) -> dict:
+        import json as _json
+        import urllib.request
+
+        data = _json.dumps(body).encode()
+        last_err: Exception | None = None
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(
+                    f"{self.base_url}/v1/completions",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                    return _json.loads(resp.read())
+            except Exception as e:  # noqa: BLE001 — transient server hiccups
+                last_err = e
+                time.sleep(2.0 * (attempt + 1))
+        raise RuntimeError(f"vLLM completion failed after 4 attempts: {last_err}")
+
+    def generate(
+        self, messages: list[dict[str, str]], *, seed: int
+    ) -> tuple[str, int, list[int]]:
+        from kvrot.chat import _render_ids
+
+        t0 = time.perf_counter()
+        ids = _render_ids(self.lm.tokenizer, messages, add_generation_prompt=True)
+        t_render = time.perf_counter() - t0
+
+        t1 = time.perf_counter()
+        data = self._post({
+            "model": self.model,
+            "prompt": ids,                       # token ids — no input-side drift
+            "max_tokens": self.max_new_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "seed": seed,
+            "stop_token_ids": sorted(self.eos_ids),
+            "return_token_ids": True,            # honored by recent vLLM; else fallback
+        })
+        t_gen = time.perf_counter() - t1
+        choice = data["choices"][0]
+        text = str(choice.get("text", "")).strip()
+        raw_ids = choice.get("token_ids")
+        if raw_ids is not None:
+            gen_ids = [int(t) for t in raw_ids]
+            while gen_ids and gen_ids[-1] in self.eos_ids:
+                gen_ids.pop()
+        else:  # server without return_token_ids: re-derive (guard catches drift)
+            gen_ids = self.lm.tokenizer.encode(text, add_special_tokens=False)
+        usage = data.get("usage") or {}
+        ntok = int(usage.get("completion_tokens", len(gen_ids)))
+        self.last_timing = {
+            "render_s": round(t_render, 3),
+            "generate_s": round(t_gen, 3),
+            "decode_s": 0.0,
+            "prompt_tokens": len(ids),
+            "tok_per_s": round(ntok / max(t_gen, 1e-9), 1),
+        }
+        return text, len(gen_ids), gen_ids
+
+
 def assert_sampling_alive(tgen: PersonaTurnGenerator) -> None:
     """Hard guard against the exp10 silent-greedy failure: two seeds, same context,
     outputs MUST differ. Runs once at startup (~2 s)."""
@@ -478,25 +584,45 @@ def main() -> None:
     ap.add_argument("--top-p", type=float, default=0.95)
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--n-convs", type=int, default=8)
+    ap.add_argument("--backend", choices=("hf", "vllm"), default="hf",
+                    help="hf: in-process model.generate (bucket-padded); vllm: local "
+                         "OpenAI-compatible server (preferred on node1 — the HF path "
+                         "pays a per-shape kernel toll there, see PAD_BUCKET)")
+    ap.add_argument("--vllm-url", default="http://127.0.0.1:8011")
+    ap.add_argument("--vllm-model", default="llama3b")
     args = ap.parse_args()
 
-    from kvrot.harness import load_model
+    tokenizer = None
+    if args.backend == "vllm":
+        from transformers import AutoTokenizer
 
-    log(f"loading {args.model} (single GPU, bf16)...")
-    lm = load_model(args.model, dtype=torch.bfloat16)
-    log(f"loaded: {lm.arch.num_hidden_layers}L on {lm.device}")
-    log(
-        "sampling: HF model.generate(do_sample=True) on the sdpa fast path — "
-        f"temperature={args.temperature} top_p={args.top_p}; per-turn "
-        f"torch.manual_seed = (--seed + conv_idx) * 1000 + turn_index, --seed={args.seed}. "
-        "Banked gen_token_ids are the ground truth; seeds are provenance."
-    )
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        tgen: Any = VllmTurnGenerator(
+            tokenizer, base_url=args.vllm_url, model=args.vllm_model,
+            max_new_tokens=args.max_new, temperature=args.temperature, top_p=args.top_p,
+        )
+        log(f"backend: vLLM at {args.vllm_url} (model {args.vllm_model}); prompts sent "
+            "as token ids; per-turn API seed = (--seed + conv_idx) * 1000 + turn_index, "
+            f"--seed={args.seed}. Banked gen_token_ids are the ground truth.")
+    else:
+        from kvrot.harness import load_model
 
-    tgen = PersonaTurnGenerator(
-        lm, max_new_tokens=args.max_new, temperature=args.temperature, top_p=args.top_p
-    )
-    log("warmup generate (absorbs the one-time ~2min kernel warmup on this stack)...")
-    log(f"warmup done in {tgen.warmup():.1f}s")
+        log(f"loading {args.model} (single GPU, bf16)...")
+        lm = load_model(args.model, dtype=torch.bfloat16)
+        tokenizer = lm.tokenizer
+        log(f"loaded: {lm.arch.num_hidden_layers}L on {lm.device}")
+        log(
+            "backend: HF model.generate(do_sample=True), sdpa, bucket-padded prompts — "
+            f"temperature={args.temperature} top_p={args.top_p}; per-turn "
+            f"torch.manual_seed = (--seed + conv_idx) * 1000 + turn_index, "
+            f"--seed={args.seed}. Banked gen_token_ids are the ground truth."
+        )
+        tgen = PersonaTurnGenerator(
+            lm, max_new_tokens=args.max_new, temperature=args.temperature,
+            top_p=args.top_p,
+        )
+        log("warmup generate (absorbs process warmup + first pad bucket)...")
+        log(f"warmup done in {tgen.warmup():.1f}s")
     assert_sampling_alive(tgen)  # exp10 silent-greedy guard — hard-fails if greedy
     banked = load_turn_records(args.turn_bank)
     if banked:
@@ -519,7 +645,7 @@ def main() -> None:
             print(f"  {conv_id} FAILED: {type(e).__name__}: {e}")
             failures.append(f"{conv_id}: {e}")
             continue
-        render = rendered_len_trinity(lm.tokenizer, turns)
+        render = rendered_len_trinity(tokenizer, turns)
         gen_toks = sum(t.gen_tokens or 0 for t in turns if t.generated)
         convs.append(
             ConvRecord(
