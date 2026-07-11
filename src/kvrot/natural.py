@@ -69,6 +69,7 @@ class TurnRecord(BaseModel):
     model: str | None = None        # served/loaded model identity
     params: GenParams | None = None
     gen_tokens: int | None = None   # completion tokens as reported by the generator
+    gen_token_ids: list[int] | None = None  # raw sampled ids (banked ground truth; exp11+)
     attempts: int = 1               # retries consumed (short/empty turns)
     flags: list[str] = Field(default_factory=list)
     wall_time_s: float | None = None

@@ -8,10 +8,14 @@ BY the 3B itself — foreign-model text through the 3B would confound "cache con
 with "out-of-distribution content". The only non-3B text is the short hand-written
 opener per conversation (banked generated=false, same convention as exp10).
 
-Sampling is MANUAL nucleus (torch.multinomial with a per-turn-seeded CPU Generator),
-never model.generate() — exp10's hard-won lesson: generate() can go silently greedy
-while logging temperatures that were never applied. do_sample semantics are therefore
-guaranteed by construction; temperature/top_p/seed are recorded per turn (GenParams).
+Sampling is HF model.generate(do_sample=True, temperature, top_p — all explicit) on
+the plain sdpa model (generation is FULLY DECOUPLED from extraction: no hooks, no
+eager attention here; the instrumented eager model only sees banked ids at replay
+time). The exp10 silent-greedy failure mode (generate() ignoring sampling flags) is
+guarded EXPLICITLY by assert_sampling_alive(): two seeds at the same context must
+produce different outputs, else hard abort. Raw sampled token ids are banked per
+turn (gen_token_ids) as the ground truth; a round-trip re-tokenization check flags
+any text→ids drift (retok_mismatch).
 
 Per-turn seed derivation (spec): seed = base_seed * 1000 + turn_index, with
 base_seed = --seed + conv_index (recorded in ConvRecord.meta); retries reseed with
@@ -177,6 +181,19 @@ OPENERS: list[tuple[str, str]] = [
 
 MIN_TURN_TOKENS = 30
 SHORT_TURN_RETRIES = 3
+_SENTENCE_ENDS = (".", "!", "?", "…", '."', '!"', '?"', ".)", "?)", "!)")
+
+
+def trim_to_sentence(text: str) -> tuple[str, bool]:
+    """Trim a cap-truncated turn back to its last complete sentence (exp10 convention).
+
+    Keeps at least ~40% of the text (a pathological ramble with no punctuation is
+    left alone rather than gutted). Returns (text, trimmed?).
+    """
+    best = max(text.rfind(e) + len(e) for e in _SENTENCE_ENDS)
+    if best >= int(0.4 * len(text)) and best < len(text):
+        return text[:best].rstrip(), True
+    return text, False
 
 
 # ── Rendering from each persona's perspective ───────────────────────────────────
@@ -209,24 +226,27 @@ def rendered_len_trinity(tokenizer, turns: list[TurnRecord]) -> int:
     )
 
 
-# ── Sampled decode (manual nucleus — never model.generate) ──────────────────────
-
-
-def _sample_top_p(
-    logits: torch.Tensor, temperature: float, top_p: float, gen: torch.Generator
-) -> int:
-    """Nucleus-sample one token id from 1-D logits (CPU, deterministic per gen)."""
-    probs = torch.softmax(logits.float().cpu() / max(temperature, 1e-6), dim=-1)
-    sorted_p, sorted_idx = probs.sort(descending=True)
-    cum = sorted_p.cumsum(0)
-    k = max(1, int((cum < top_p).sum().item()) + 1)
-    top = sorted_p[:k] / sorted_p[:k].sum()
-    pick = int(torch.multinomial(top, 1, generator=gen).item())
-    return int(sorted_idx[pick].item())
+# ── Sampled decode (HF model.generate on the sdpa fast path) ─────────────────────
+#
+# Restructured 2026-07-10 (Luxia directive): generation is FULLY DECOUPLED from
+# extraction — no hooks, no eager attention, no output_* here; the instrumented
+# eager model only ever sees the banked ids at replay time. The original manual
+# per-token nucleus loop ran at ~2-9 tok/s (per-token CPU sort over the 128k vocab
+# + sync transfers); measured on node1 (runs/probe_decode.log):
+# model.generate(do_sample=True) 50.9 tok/s, greedy 70.1 tok/s. vLLM is not
+# importable in the shared venv (and installs are forbidden on node1), so HF sdpa
+# generate() is the designated fallback path.
+#
+# The exp10 silent-greedy failure mode is guarded EXPLICITLY: at startup,
+# assert_sampling_alive() draws two short generations with different seeds at the
+# same context and hard-fails if they are identical. Determinism story: per-turn
+# torch.manual_seed(seed) makes runs reproducible on identical hardware/software,
+# but the BANKED TOKEN IDS (gen_token_ids) are the ground truth downstream —
+# seeds are provenance, not identity.
 
 
 class PersonaTurnGenerator:
-    """Sample one persona turn: fresh prefill of the full render, then nucleus decode.
+    """Sample one persona turn with model.generate (fresh prompt render per turn).
 
     No cross-turn KV carry — a 3B prefill of <=5k tokens is cheap, and statelessness
     keeps the banked jsonl the single source of truth (no cache-divergence class of
@@ -252,40 +272,53 @@ class PersonaTurnGenerator:
         self.eos_ids = eos
 
     @torch.no_grad()
-    def generate(self, messages: list[dict[str, str]], *, seed: int) -> tuple[str, int]:
-        """Returns (decoded_text, n_generated_tokens)."""
-        from transformers import DynamicCache
-
+    def generate(
+        self, messages: list[dict[str, str]], *, seed: int
+    ) -> tuple[str, int, list[int]]:
+        """Returns (decoded_text, n_generated_tokens, raw_generated_ids)."""
         from kvrot.chat import _render_ids
 
         dev = self.lm.device
         ids = _render_ids(self.lm.tokenizer, messages, add_generation_prompt=True)
         input_ids = torch.tensor([ids], dtype=torch.long, device=dev)
-        cache = DynamicCache()
-        out = self.lm.model(input_ids=input_ids, past_key_values=cache, use_cache=True)
-        cache = out.past_key_values
-        logits = out.logits[0, -1, :]
+        torch.manual_seed(seed)
+        out = self.lm.model.generate(
+            input_ids,
+            attention_mask=torch.ones_like(input_ids),
+            max_new_tokens=self.max_new_tokens,
+            do_sample=True,                      # explicit — never rely on defaults
+            temperature=self.temperature,
+            top_p=self.top_p,
+            eos_token_id=sorted(self.eos_ids),
+            pad_token_id=int(self.lm.tokenizer.eos_token_id),
+            use_cache=True,
+        )
+        gen_ids = [int(t) for t in out[0, len(ids):].tolist()]
+        while gen_ids and gen_ids[-1] in self.eos_ids:  # strip terminal eos
+            gen_ids.pop()
+        text = self.lm.tokenizer.decode(gen_ids, skip_special_tokens=True)
+        return text, len(gen_ids), gen_ids
 
-        gen = torch.Generator().manual_seed(seed)
-        out_ids: list[int] = []
-        pos = len(ids)
-        for _ in range(self.max_new_tokens):
-            nxt = _sample_top_p(logits, self.temperature, self.top_p, gen)
-            if nxt in self.eos_ids:
-                break
-            out_ids.append(nxt)
-            step = self.lm.model(
-                input_ids=torch.tensor([[nxt]], dtype=torch.long, device=dev),
-                past_key_values=cache,
-                use_cache=True,
-                position_ids=torch.tensor([[pos]], device=dev),
-                cache_position=torch.tensor([pos], device=dev),
-            )
-            cache = step.past_key_values
-            logits = step.logits[0, -1, :]
-            pos += 1
-        text = self.lm.tokenizer.decode(out_ids, skip_special_tokens=True)
-        return text, len(out_ids)
+
+def assert_sampling_alive(tgen: PersonaTurnGenerator) -> None:
+    """Hard guard against the exp10 silent-greedy failure: two seeds, same context,
+    outputs MUST differ. Runs once at startup (~2 s)."""
+    msgs = [{"role": "system", "content": SYSTEM_B},
+            {"role": "user", "content": OPENERS[0][1]}]
+    saved = tgen.max_new_tokens
+    tgen.max_new_tokens = 24
+    try:
+        _, _, ids_a = tgen.generate(msgs, seed=111)
+        _, _, ids_b = tgen.generate(msgs, seed=222)
+    finally:
+        tgen.max_new_tokens = saved
+    if ids_a == ids_b:
+        raise RuntimeError(
+            "sampling guard FAILED: two different seeds produced identical output — "
+            "generation is silently greedy (the exp10 bug). Aborting before banking "
+            "anything."
+        )
+    print("[guard] sampling alive: two seeds -> different outputs", flush=True)
 
 
 # ── Conversation growth ──────────────────────────────────────────────────────────
@@ -326,13 +359,17 @@ def grow_conversation(
         msgs = messages_for_speaker(speaker, turns)
         seed = base_seed * 1000 + idx
 
-        text, ntok, flags, attempts = "", 0, [], 0
+        text, ntok, gen_ids, flags, attempts = "", 0, [], [], 0
         for attempt in range(SHORT_TURN_RETRIES + 1):
             attempts = attempt + 1
             t_start = time.perf_counter()
-            raw, ntok = tgen.generate(msgs, seed=seed + attempt * 499)
+            raw, ntok, gen_ids = tgen.generate(msgs, seed=seed + attempt * 499)
             wall = time.perf_counter() - t_start
             text, flags = clean_generated_turn(raw, own_label=own, other_label=other)
+            if ntok >= tgen.max_new_tokens:  # cap hit → likely mid-sentence; trim
+                text, trimmed = trim_to_sentence(text)
+                if trimmed:
+                    flags.append("cap_sentence_trimmed")
             if ntok >= MIN_TURN_TOKENS and text:
                 break
             print(
@@ -344,6 +381,13 @@ def grow_conversation(
                 f"{conv_id} turn {idx}: degenerate after {SHORT_TURN_RETRIES + 1} attempts "
                 f"(ntok={ntok}) — inspect the model/register before rerunning"
             )
+        # Round-trip check: the eval re-renders banked TEXT through the chat template,
+        # so text→ids must reproduce the sampled ids. Only meaningful when the text
+        # was not modified (no trim / label-bleed cleanup).
+        if not flags and tgen.lm.tokenizer.encode(text, add_special_tokens=False) != gen_ids:
+            flags.append("retok_mismatch")
+            print(f"    [{conv_id}] turn {idx}: RETOK MISMATCH — decoded text does not "
+                  "re-tokenize to the sampled ids (banked ids remain ground truth)")
         rec = TurnRecord(
             conv_id=conv_id, turn_index=idx, speaker=speaker, text=text,
             generated=True, model=model_name,
@@ -351,7 +395,7 @@ def grow_conversation(
                 temperature=args.temperature, top_p=args.top_p,
                 max_tokens=args.max_new, seed=seed, stop=["<eos-ids>"],
             ),
-            gen_tokens=ntok, attempts=attempts, flags=flags,
+            gen_tokens=ntok, gen_token_ids=gen_ids, attempts=attempts, flags=flags,
             wall_time_s=wall, timestamp=time.time(),
         )
         append_turn_record(turn_bank, rec)
@@ -383,15 +427,16 @@ def main() -> None:
     lm = load_model(args.model, dtype=torch.bfloat16)
     log(f"loaded: {lm.arch.num_hidden_layers}L on {lm.device}")
     log(
-        "sampling: MANUAL nucleus (torch.multinomial, per-turn-seeded CPU Generator) — "
-        f"temperature={args.temperature} top_p={args.top_p}; model.generate() is never "
-        "called, so the exp10 silent-greedy failure mode cannot occur. "
-        f"per-turn seed = (--seed + conv_idx) * 1000 + turn_index, --seed={args.seed}"
+        "sampling: HF model.generate(do_sample=True) on the sdpa fast path — "
+        f"temperature={args.temperature} top_p={args.top_p}; per-turn "
+        f"torch.manual_seed = (--seed + conv_idx) * 1000 + turn_index, --seed={args.seed}. "
+        "Banked gen_token_ids are the ground truth; seeds are provenance."
     )
 
     tgen = PersonaTurnGenerator(
         lm, max_new_tokens=args.max_new, temperature=args.temperature, top_p=args.top_p
     )
+    assert_sampling_alive(tgen)  # exp10 silent-greedy guard — hard-fails if greedy
     banked = load_turn_records(args.turn_bank)
     if banked:
         log(f"resuming from {args.turn_bank}: "
