@@ -107,9 +107,25 @@ Per cell, per condition c ∈ {ROT, REC, NAIVE}: **Δ_c = sig(c) − sig(FULL)**
    distances reported as ratios to floor (b).
 4. **Sensitivity control:** d_NAIVE must exceed floor by ≥10× for the cell to count toward
    null interpretation (decision rule below).
-5. **Direction:** project Δ_ROT, Δ_REC onto the banked 3B mode-discriminant directions;
-   report |projection|/‖Δ‖ (mode-space fraction). This is the small-magnitude-robust version of
-   the P3 dissociation.
+5. **Direction consistency (PRIMARY small-magnitude test, basis-free):** across cells, the mean
+   pairwise cosine between per-cell Δ_REC vectors (and separately Δ_ROT), against the same
+   statistic computed on floor deltas (permutation null). "Recompute drifts in a *systematic*
+   direction across cells; rotation's residual doesn't" — answers P3's spirit without assuming
+   any privileged basis.
+5b. **Mode-space projection (EXPLORATORY — amended 2026-07-10 after Luxia's challenge):**
+   operationalized precisely: Δz = (sig_c − sig_FULL) ⊘ FULL_scale (means cancel in the
+   difference); project onto the orthonormalized rows of FULL_W (the 4-dim LDA subspace
+   separating the five calibration reasoning modes: analogical/contrastive/dialectical/linear/
+   socratic); report mode_fraction = ‖P_U Δz‖²/‖Δz‖² and the signed 4-vector read against the
+   banked mode centroids. Interpreted ONLY against three nulls: (i) floor deltas' mode_fraction,
+   (ii) isotropic reference 4/2713 ≈ 0.15%, (iii) feature-permutation null. Plus a calibration
+   read on NAIVE: if even gross cache damage barely projects, that bounds expectations. The
+   hinge is explicit: these directions were fit to separate reasoning modes on the calibration
+   battery under normal generation — cache-condition drift may be character-real yet orthogonal
+   to this 4-dim window. A positive (beats all three nulls) is meaningful and interpretable; a
+   null here means nothing and is never evidence against character drift.
+   NOTE: the v3 FULL feature space is 2,713-dim (FULL_names; the 1,837 figure elsewhere is the
+   phase-0 signature). The bridge's feature vector must align exactly with FULL_names to use W.
 6. **Per-family breakdown:** every result reported per feature family (T1/T2/T2.5/T3 and the
    hand families), with mechanically length-sensitive features (cache_coverage, recency
    profiles) flagged in the table — visible, not laundered into the pooled number.
@@ -125,8 +141,10 @@ Per cell, per condition c ∈ {ROT, REC, NAIVE}: **Δ_c = sig(c) − sig(FULL)**
 - **P4:** effects concentrate in T2.5 + T2, not T1 logit stats.
 - **P5 (new, sensitivity):** d_NAIVE ≫ floor (≥10×) in every cell. If P5 fails, the experiment
   reports "instrument cannot see cache damage in this regime" and NO null conclusions are drawn.
-- **P6 (new, direction):** where Δs are small, Δ_REC has a higher mode-space fraction than
-  Δ_ROT in Regime A — recompute drifts *along* character axes; rotation's residual is nuisance.
+- **P6 (new, direction — amended):** where Δs are small, Δ_REC is more *direction-consistent*
+  across Regime-A cells than Δ_ROT (metric 5) — recompute drifts somewhere systematic;
+  rotation's residual is unstructured. The mode-space projection (metric 5b) is exploratory
+  color on top: if it beats its nulls, we additionally get to say WHICH character direction.
 
 **Decision rules:** paired Wilcoxon p<0.05 over Regime-A cells for P1; "≈ floor" means <3× floor
 (b); the boring-null verdict ("both preserve character to instrument precision") requires P5 to
