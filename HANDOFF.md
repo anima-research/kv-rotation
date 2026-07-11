@@ -32,6 +32,16 @@ naive-MP). Committed + pushed to `git@github.com:anima-research/kv-rotation.git`
 is essentially settled; the open frontier is realism (chat-shaped eval), exactness (Tier 3), and the
 production vLLM/TP port (where the true speedup ratio gets measured).
 
+**2026-07-03: the chat-shaped eval (exp09) is STAGED, not run** — GPUs were busy. Everything
+GPU-free is done and CPU-tested: `src/kvrot/chat.py` (turn spans via incremental chat-template
+rendering w/ a prefix-stability assert, turn-aligned eviction, deterministic conversation
+synthesis from the real eval corpus), `tests/test_chat.py` (16 tests; suite 42/42),
+`experiments/exp09_trinity_chat.py` (exp08-style protocol: evicted + retained passcode facts,
+next-turn-reply KL, optional recompute decomposition). **Next agent: read
+`notes/design-chat-eval.md`** (protocol + pre-registered predictions P1–P4 — P3 is the one that
+could surprise), smoke exp09 on the 3B (1 GPU), then trinity per §4. These four files are
+currently uncommitted working-tree additions — commit them when the user asks.
+
 ---
 
 ## 1. The idea & the reframing (read this carefully — it's the whole project)
@@ -253,6 +263,8 @@ metrics, config, data. `scripts/sample_eval_corpus.py` builds the eval subset on
   GPU-resident recompute 20–29 s = **~560–720×** — but that's HF *naive* model-parallelism (1 GPU at
   a time); production TP ratio TBD. Cold first-call inflates (240 ms); report warm. Placement lever:
   cap per-GPU near the even-split, not the max.
+- **exp09** chat-shaped eval (turn-aligned eviction on multi-turn chat): **STAGED 2026-07-03,
+  not yet run** — see `notes/design-chat-eval.md` for the protocol + pre-registered predictions.
 
 ---
 
@@ -261,14 +273,16 @@ metrics, config, data. `scripts/sample_eval_corpus.py` builds the eval subset on
 1. **Pick a frontier — trinity feasibility is settled** (exp01–08b: faithful, recall-exact,
    continuity-preserving, ~3 orders cheaper). Remaining, in rough value order:
    (a) **Chat-shaped eval** — turn-aligned eviction on multi-turn chat (the real deployment shape;
-       our biggest realism gap — all evals are raw docs). Needs a clean turn-data source.
+       our biggest realism gap — all evals are raw docs). ✅ STAGED (exp09 + `kvrot/chat.py`,
+       CPU-tested; the turn-data source is deterministic synthesis from the eval corpus — see
+       `notes/design-chat-eval.md`). Remaining: the GPU runs (3B smoke, then trinity).
    (b) **Longer contexts** (32k/64k/128k toward 256k) — exp08 shows memory is *not* the constraint
        (~600 GiB free aggregate; use `--device-map balanced --mem-frac 0.70`); stresses SWA-exactness.
    (c) **Tier 3 selective recompute** — drive drift→0 by recomputing high-deviation survivors, ideally
        only the 15 global layers. (d) **vLLM/TP port** — the only way to measure the production speedup
        (HF's ~560–720× is naive model-parallelism).
-2. **Chat-shaped eval** — fetch OASST2 or chat-wrap docs as turns; turn-aligned eviction (the
-   real deployment shape). No clean turn-data in kotodama yet.
+2. **Chat-shaped eval** — ✅ STAGED (see 1a): chat-wrapped eval-corpus turns, no OASST2 needed.
+   Remaining work is the GPU runs of `experiments/exp09_trinity_chat.py`.
 3. **Neutral-continuation rerun of exp05** — size the "rotation > recompute for continuity"
    effect without the full-model-continuation bias.
 4. **Tier 3 selective recompute** (CacheBlend-style) — recompute high-KV-deviation survivors,
@@ -280,6 +294,11 @@ metrics, config, data. `scripts/sample_eval_corpus.py` builds the eval subset on
    beyond the 4096 window are bit-exact (the "75% of layers free" claim).
 7. **vLLM port** (production): in-place KV mutate API + Δ-rotation kernel keyed on slot_mapping +
    APC re-hashing after position shift (or bypass APC for rotated blocks). Study LMCache/CacheBlend.
+8. **Signature preservation (anamnesis crossover)** — user-flagged, pre-registered: does rotation
+   preserve *computational character* (anamnesis T2.5/T2 signatures), not just token KL? Same
+   model family as phase 0 (Llama-3.2-3B), instrument already built, content-controlled by
+   teacher-forcing one continuation under full/rotated/recompute caches. The dissociation to hunt:
+   KL-equal but signature-divergent recompute. **See `notes/idea-signature-preservation.md`.**
 
 ---
 
@@ -287,10 +306,12 @@ metrics, config, data. `scripts/sample_eval_corpus.py` builds the eval subset on
 
 ```bash
 cd /home/luxia/projects/kv-rotation
-uv run pytest                      # 26/26, proves the rotation math on CPU
+uv run pytest                      # 42/42 (26 rotation-math + 16 chat-shaped), all CPU
 sed -n '1,80p' notes/journal.md    # the chronological story + numbers
+cat notes/design-chat-eval.md      # the staged next experiment (exp09) + predictions
 # then sync + run on node1 per §4. nvidia-smi before grabbing all 8 GPUs.
 ```
 Memory file: `~/.claude/projects/-home-luxia-projects-kv-rotation/memory/` has the project memo.
-Git: initialized, staged, **not committed** (user's call). When asked, the scaffold+notes are a
-clean first commit.
+Git: committed + pushed (`anima-research/kv-rotation`), EXCEPT the staged exp09 files
+(`kvrot/chat.py`, `tests/test_chat.py`, `experiments/exp09_trinity_chat.py`,
+`notes/design-chat-eval.md`) — uncommitted working-tree additions, commit when the user asks.
