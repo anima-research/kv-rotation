@@ -271,32 +271,89 @@ class PersonaTurnGenerator:
                 eos.add(int(i))
         self.eos_ids = eos
 
+    #: Prompt lengths are LEFT-PADDED up to a multiple of this. Measured on node1
+    #: (runs/probe2.log, runs/probe3_{default,expandable}.log): the FIRST forward at
+    #: any new prefill length runs at ~2.6 tok/s (shape-keyed kernel selection/JIT on
+    #: this torch-2.11/B200 stack — NOT allocator growth: expandable_segments changes
+    #: nothing; NOT one-time: it recurs at every fresh length). Repeat shapes run at
+    #: 50-70 tok/s. A growing dialogue is a fresh length every turn, so without
+    #: bucketing the whole run degrades to ~3 tok/s. Bucketing caps the run at ~10
+    #: distinct shapes (~25 s penalty each, once). Left padding + attention_mask is
+    #: the standard batched-generation idiom: positions derive from the mask, pad
+    #: tokens are fully masked, and the sampled ids are unaffected.
+    PAD_BUCKET = 512
+
+    @torch.no_grad()
+    def warmup(self) -> float:
+        """One throwaway generate right after load (absorbs process-level warmup +
+        the first pad bucket). Returns wall seconds."""
+        dev = self.lm.device
+        ids = torch.randint(100, 20000, (1, self.PAD_BUCKET), device=dev)
+        t0 = time.perf_counter()
+        self.lm.model.generate(
+            ids, attention_mask=torch.ones_like(ids), max_new_tokens=8,
+            do_sample=True, temperature=0.9, top_p=0.95,
+            pad_token_id=int(self.lm.tokenizer.eos_token_id), use_cache=True,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.perf_counter() - t0
+
     @torch.no_grad()
     def generate(
         self, messages: list[dict[str, str]], *, seed: int
     ) -> tuple[str, int, list[int]]:
-        """Returns (decoded_text, n_generated_tokens, raw_generated_ids)."""
+        """Returns (decoded_text, n_generated_tokens, raw_generated_ids).
+
+        Per-phase wall times land in ``self.last_timing`` (render/generate/decode
+        seconds + tok/s) so the growth loop can log an honest rate every turn.
+        """
         from kvrot.chat import _render_ids
 
         dev = self.lm.device
+        t0 = time.perf_counter()
         ids = _render_ids(self.lm.tokenizer, messages, add_generation_prompt=True)
-        input_ids = torch.tensor([ids], dtype=torch.long, device=dev)
+        plen = len(ids)
+        pad_id = int(self.lm.tokenizer.eos_token_id)
+        bucket_len = ((plen + self.PAD_BUCKET - 1) // self.PAD_BUCKET) * self.PAD_BUCKET
+        n_pad = bucket_len - plen
+        input_ids = torch.tensor([[pad_id] * n_pad + ids], dtype=torch.long, device=dev)
+        attention_mask = torch.cat(
+            [torch.zeros(1, n_pad, dtype=torch.long, device=dev),
+             torch.ones(1, plen, dtype=torch.long, device=dev)], dim=1,
+        )
+        t_render = time.perf_counter() - t0
+
         torch.manual_seed(seed)
+        t1 = time.perf_counter()
         out = self.lm.model.generate(
             input_ids,
-            attention_mask=torch.ones_like(input_ids),
+            attention_mask=attention_mask,
             max_new_tokens=self.max_new_tokens,
             do_sample=True,                      # explicit — never rely on defaults
             temperature=self.temperature,
             top_p=self.top_p,
             eos_token_id=sorted(self.eos_ids),
-            pad_token_id=int(self.lm.tokenizer.eos_token_id),
+            pad_token_id=pad_id,
             use_cache=True,
         )
-        gen_ids = [int(t) for t in out[0, len(ids):].tolist()]
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_gen = time.perf_counter() - t1
+
+        t2 = time.perf_counter()
+        gen_ids = [int(t) for t in out[0, bucket_len:].tolist()]
         while gen_ids and gen_ids[-1] in self.eos_ids:  # strip terminal eos
             gen_ids.pop()
         text = self.lm.tokenizer.decode(gen_ids, skip_special_tokens=True)
+        self.last_timing = {
+            "render_s": round(t_render, 3),
+            "generate_s": round(t_gen, 3),
+            "decode_s": round(time.perf_counter() - t2, 3),
+            "prompt_tokens": plen,
+            "padded_to": bucket_len,
+            "tok_per_s": round(len(gen_ids) / max(t_gen, 1e-9), 1),
+        }
         return text, len(gen_ids), gen_ids
 
 
@@ -400,9 +457,11 @@ def grow_conversation(
         )
         append_turn_record(turn_bank, rec)
         turns.append(rec)
-        if idx % 4 == 1:
-            log(f"  [{conv_id}] turn {idx} ({speaker}, {ntok} tok, "
-                f"render {rendered_len_trinity(tgen.lm.tokenizer, turns)})")
+        tm = getattr(tgen, "last_timing", {})
+        log(f"  [{conv_id}] turn {idx} ({speaker}): {ntok} tok @ "
+            f"{tm.get('tok_per_s', 0):.1f} tok/s (prompt {tm.get('prompt_tokens', 0)}, "
+            f"render {tm.get('render_s', 0):.2f}s gen {tm.get('generate_s', 0):.1f}s "
+            f"decode {tm.get('decode_s', 0):.2f}s) flags={flags or '-'}")
     return turns
 
 
@@ -436,6 +495,8 @@ def main() -> None:
     tgen = PersonaTurnGenerator(
         lm, max_new_tokens=args.max_new, temperature=args.temperature, top_p=args.top_p
     )
+    log("warmup generate (absorbs the one-time ~2min kernel warmup on this stack)...")
+    log(f"warmup done in {tgen.warmup():.1f}s")
     assert_sampling_alive(tgen)  # exp10 silent-greedy guard — hard-fails if greedy
     banked = load_turn_records(args.turn_bank)
     if banked:
