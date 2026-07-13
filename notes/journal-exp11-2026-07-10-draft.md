@@ -518,3 +518,52 @@ dialogue, at ef=0.5, over a frozen 256-token continuation.
 Machine state (boost): all our processes exited; vLLM server torn down after
 generation; GPUs hold only the other tenant's job (~162 GB each, present before
 and after our run, untouched). Artifacts rsynced local.
+
+---
+
+## T3 per-feature decomposition (2026-07-12 follow-up)
+
+> Question (Luxia, relaying imago): the family decomp says "the effect lives in T3"
+> and sub-decomposed it by PCA layer and snapshot — but which *specific* T3 features
+> are competitive, and what is the per-feature breakdown? The banked `top_gap_features`
+> was capped at k=8 with no p-value. Script: `experiments/exp11_t3_perfeature.py` →
+> `runs/exp11_t3_perfeature.json` (CPU-local, ~3 s; no GPU — pure numpy on the banked
+> aggregate grid). Reuses the vetted family-decomp helpers; the "all n=12" top-8
+> reproduces the banked `top_features["T3"]` list bit-for-bit (metric identity check).
+
+**Method.** Same training-free statistic as the family decomp, pushed to per-feature:
+standardized `Δz = (sig − sig_FULL) ⊘ FULL_scale`, per T3 feature j the paired abs-excess
+`g_cj = |Δz_REC| − |Δz_ROT|` (>0 ⇒ recompute perturbs that feature further from FULL than
+rotation). Per-feature EXACT one-sided sign-flip p (vectorized, chunked; n capped at 20),
+**Benjamini–Hochberg FDR q=0.05 across all 1,250 T3 dims**. Descriptive effect size =
+median per-cell log2(|Δz_REC|/|Δz_ROT|). Run on main grid (dlg n=8, all n=12) and pooled
+confirmatory grid (dlg n=20); doc regime not run per-feature (n=4, sign floor 0.0625).
+The anamnesis `feature_decomp.py` removal-cost is NOT applicable per-feature here — it is
+encoder-CV (RF/LDA on topic labels) at family granularity and needs many labeled samples;
+n=12/20 paired aggregate cells support only the sign-flip analog (the "No encoders" limit).
+
+**Q1 — are specific T3 features individually competitive? Yes, and broadly:**
+
+| set | BH-significant (q<0.05) / 1250 | REC-further in *every* cell |
+|---|---|---|
+| dialogue n=8 (main) | **531** | 278 |
+| all n=12 (main) | 572 | 37 |
+| dialogue n=20 (pooled) | **915** | 110 |
+
+Half-to-three-quarters of T3's dims each pass a paired significance test on their own after
+FDR control. Strongest single carrier **`pca_L14_t0_c11`** (median std-excess +0.56; median
+log2 ratio ≈ +3.1 → REC ~9× ROT per feature; REC-further 20/20 pooled, p<1e-6). Next tier is
+a small recurring set of PCA directions: components **c30/c37/c23/c13** at layers L14/18/21/24.
+
+**Q2 — per-feature breakdown, two clean axes:**
+- **Snapshot: concentrated at t0** (first generated position) — most significant features
+  (216/250 pooled) and every top-ranked feature is t0; decays t1→t4.
+- **Layer: mid-late, not early** — L14/L18/L21/L24 each 180–206/250 significant (pooled);
+  L7 weakest (126/250).
+
+**Reading.** The contamination signal is not sparse — it is broadly and redundantly encoded
+across T3 (majority of dims individually significant), peaking at first-snapshot mid-late
+residual-PCA directions. Consistent with the family-level LOFO (T3 carries it by its own
+weight but is not the sole carrier): a clear rank order (~a dozen dominant directions), but
+no single load-bearing feature — knock any one out and hundreds of siblings still separate
+REC from ROT. p-floors are enumeration-limited (n=8→0.0039, n=12→0.0002, n=20→~1e-6).
