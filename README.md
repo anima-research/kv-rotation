@@ -1,72 +1,116 @@
 # kvrot — accurate KV-cache rotation under prefix eviction
 
-> **New here — including a fresh agent picking this up?** Start with **[HANDOFF.md](HANDOFF.md)**:
-> the idea + reframing, node1 setup, code map, results so far, gotchas, and next steps.
+**Problem.** In long-running or agentic LLM serving you want a *rolling
+context*: pop the oldest turns to make room for new ones. But a transformer's
+KV cache is positionally and content-bound to the original prefix, so today
+any prefix change invalidates it and forces a recompute. That kills prompt
+caching for exactly the workload that needs it most.
 
-**Problem.** In long-running / agentic serving you want a *rolling context*: pop the
-oldest turns to make room for new ones. But the KV cache is positionally and
-content-bound to the original prefix, so today any prefix change invalidates it and
-forces a recompute. We own the serving infra, so we can do better.
+**Goal.** *Exact-vs-full-prompt* behaviour while reclaiming KV space, at
+~stable latency / throughput / memory. After popping a prefix block, the model
+should behave as if the full context were still present — not as if the early
+tokens had been deleted. (This is deliberately *not* the same target as
+"behave as if the early tokens never existed," which just needs a recompute
+and discards information we'd rather keep.)
 
-**Goal (pinned).** *Exact-vs-full-prompt* behaviour while reclaiming KV space, at
-**~stable latency / throughput / memory**. I.e. after popping a prefix block, the
-model should behave as if the full context were still present — not as if the early
-tokens had been deleted.
+**The feasibility law that organises the project:**
 
-**The feasibility law that organises everything:**
-
-> When you pop a prefix block `B` and keep the (re-rotated) survivor KV, you preserve
-> `B`'s **indirect** influence *exactly* (it is already baked into the survivors' KV).
-> You only lose the **direct** future→`B` attention path. So
+> When you pop a prefix block `B` and keep the (re-rotated) survivor KV, you
+> preserve `B`'s **indirect** influence exactly — it's already baked into the
+> survivors' keys/values. You only lose the **direct** future→`B` attention
+> path. So:
 >
->   **behavioural drift vs. full-prompt ≈ the future attention mass that would have landed on `B`.**
+> **behavioural drift vs. full-prompt ≈ the future attention mass that would
+> have landed on `B`.**
 
-- Stale prefix (low future attention) → near-exact, cheap. Feasible.
-- Still-relevant prefix → must keep it (compressed) or selectively recompute. Costs.
-- Sliding-window layers, `B` ≥ W before the oldest survivor → **provably exact, free.**
+Consequences: a stale prefix (low future attention) is near-exact to drop and
+cheap; a still-relevant prefix must be kept (compressed) or selectively
+recomputed; and on sliding-window-attention layers, a block evicted beyond the
+window is provably exact to drop, for free.
 
-See [`notes/feasibility.md`](notes/feasibility.md) for the full research synthesis and
-[`notes/references.md`](notes/references.md) for verified citations.
+See [`notes/feasibility.md`](notes/feasibility.md) for the literature synthesis
+and [`notes/references.md`](notes/references.md) for citations.
 
 ## The mechanism stack (cheap → expensive)
 
-| Tier | Mechanism | Cost | Exactness |
+| Tier | Mechanism | Cost | Status |
 |---|---|---|---|
-| 0 | RoPE re-rotation (position fix) | ~free | exact for the positional component |
-| 1 | sink-aware eviction | ~free | near-exact for stale content |
-| 2 | importance-aware eviction | ~free | widens what's safe to drop |
-| 3 | selective recompute (CacheBlend-style) | compute | drives drift → 0, empirical |
-| 4 | learned consolidation (Gist/Cartridges) | training | best for still-relevant content |
+| 0 | RoPE re-rotation of survivor keys | ~free | ✅ proven bit-exact |
+| 1 | sink-aware eviction (keep first N tokens) | ~free | ✅ |
+| 2 | importance-aware eviction (H2O accumulated attention) | ~free | ✅ on Llama; not yet ported to the MoE target |
+| 3 | selective recompute (CacheBlend-style, high-deviation survivors) | compute | not yet built |
+| 4 | learned consolidation (Gist/Cartridges-style) | training | not yet built |
 
 ## North-star metric
 
-`exact-vs-full` is operationalised as the per-step **KL(p_full ‖ p_rotated)** of the
-next-token distribution over a continuation, plus top-1 agreement, plus a continuity
-task — measured against the *full-context* cache (not a shortened-prompt recompute).
+`exact-vs-full` is operationalised as the per-step **KL(p_full ‖ p_rotated)**
+of the next-token distribution over a teacher-forced continuation, plus top-1
+agreement and a factual-recall probe — measured against the *full-context*
+cache, not a shortened-prompt recompute. We separate **information loss**
+(`KL(full ‖ shortened-recompute)`, the cost of forgetting) from **mechanism
+error** (`KL(shortened-recompute ‖ rotation)`, the cost of the cheap-reuse
+trick itself) — the latter is the honest verdict on whether rotation is doing
+its job.
+
+## Status
+
+Validated on **Llama-3.2-3B** (full-attention, the harder case) and at scale
+on a real ~389B hybrid sliding-window MoE target: the mechanism is faithful
+(mechanism error at or below irreducible information loss in every raw-content
+setting measured), continuity-preserving (closer to the full-context
+distribution than a clean recompute is, both behaviourally and — per an
+independent computational-signature instrument — internally), and orders of
+magnitude cheaper than the recompute it replaces.
+
+Turn-aligned eviction on templated multi-turn chat exposed a real failure mode
+(low-entropy chat scaffolding reads near-seam contamination the mechanism
+otherwise hides) that recovers on naturalized dialogue — see the ledger below
+for the full story, including the open threads it motivates (selective
+recompute, importance-aware eviction on the MoE target, a production
+tensor-parallel serving port).
+
+**→ [`RESULTS.md`](RESULTS.md) is the full results ledger**, one entry per
+experiment (exp01–exp11): goal, setup, numbers, verdict.
 
 ## Layout
 
 ```
 src/kvrot/
   rope.py        # Tier 0: exact RoPE re-rotation of stored (pre-rotated) keys
-  snapshot.py    # KVSnapshot + cache surgery (evict / reindex), HF adapters
-  eviction.py    # eviction policies -> keep-indices + new positions
-  metrics.py     # KL-vs-full, top-1 agreement, drift reports
-  config.py      # strongly-typed (pydantic) arch / rope / eviction specs
-  harness.py     # real-model rolling-context experiment (run on node1)
-tests/           # CPU correctness tests (rotation math + surgery), no model needed
-experiments/     # runnable measurement scripts (node1)
-notes/           # feasibility synthesis + references
+  snapshot.py     # KVSnapshot + cache surgery (evict / reindex), HF adapters
+  eviction.py     # eviction policies -> keep-indices + new positions
+  metrics.py      # KL-vs-full, top-1 agreement, drift reports
+  config.py       # strongly-typed (pydantic) arch / rope / eviction specs
+  harness.py      # real-model rolling-context experiment runner (GPU)
+  chat.py         # turn-aligned eviction: chat-template turn spans, synthesis
+  natural.py      # naturalized-dialogue eval support, device-placement helpers
+  sigbridge.py    # cached-replay bridge into an external signature-extraction
+                   # instrument (exp11) — computational-character comparison
+tests/            # CPU correctness tests (rotation math, surgery, eviction,
+                   # metrics, config, data, chat, sigbridge) — no model needed
+experiments/      # runnable measurement scripts (exp01–exp11, GPU-backed)
+notes/            # feasibility synthesis, design docs, chronological journals
 ```
 
-## Quickstart (dev box, CPU — proves the rotation math)
+## Quickstart (CPU — proves the rotation math)
 
 ```bash
 uv sync --extra dev
-uv run pytest
+uv run pytest      # correctness tests: rotation math, cache surgery, eviction,
+                    # chat turn-spans, config, metrics — no GPU/model required
 ```
 
-## Real-model runs (node1, GPU)
+## Real-model runs (GPU)
 
-See [`NODE1.md`](NODE1.md). Targets: `llama-3.2-3b-instruct` (hard case, full attn)
-then `Trinity-Large-Preview` (hybrid SWA, the eventual goal).
+`experiments/exp01`–`exp11` are the runnable measurement scripts; each nominal
+`expNN_*.py` file corresponds to a ledger entry in `RESULTS.md`. They expect a
+CUDA-capable host with the `hf` (and, for exp11, `sig`) extras installed:
+
+```bash
+uv pip install -e ".[hf,dev]"
+python experiments/exp01_rotation_drift.py \
+    --model <path-or-hf-id> --context-len 512 --gen 32 --evict 64 128 256
+```
+
+GPU-host-specific setup (shared-machine constraints, exact model paths, sync
+workflow) is kept in local, untracked notes rather than this repo.

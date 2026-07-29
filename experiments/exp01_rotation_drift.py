@@ -1,16 +1,16 @@
-"""exp01 — behavioural drift vs. full prompt under prefix eviction (run on node1).
+"""exp01 — behavioural drift vs. full prompt under prefix eviction (GPU-backed).
 
 Reproduces the core Phase-1 result on a real model: that naive prefix popping (which
 drops attention sinks) blows up KL-vs-full, while sink-aware eviction + RoPE
 re-rotation keeps it small. Sweeps how much prefix we drop.
 
-Usage (inside the node1 venv, see NODE1.md):
+Usage (inside a GPU venv with the ``hf`` extra installed):
 
     python experiments/exp01_rotation_drift.py \
-        --model /models/llama-3.2-3b-instruct --context-len 512 --gen 32 \
+        --model <path-or-hf-id-for-llama-3.2-3b-instruct> --context-len 512 --gen 32 \
         --evict 64 128 256
 
-Then point ``--model /models/Trinity-Large-Preview`` to test the hybrid-SWA target.
+Then point ``--model`` at a hybrid sliding-window-attention model to test that case.
 """
 
 from __future__ import annotations

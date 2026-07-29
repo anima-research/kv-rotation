@@ -41,7 +41,7 @@ addopts = "-q"
 
 # --- uv configuration -------------------------------------------------------
 # The dev box has no GPU, so we pin torch to CPU wheels here for a light, fast
-# `uv sync`. node1 installs a CUDA build of torch into its own venv; see NODE1.md.
+# `uv sync`. GPU boxes install a CUDA build of torch into their own venv instead.
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"

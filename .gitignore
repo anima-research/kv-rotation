@@ -26,3 +26,8 @@ results/
 .vscode/
 .idea/
 .DS_Store
+
+# internal-only working docs (machine paths, ssh workflow, agent handoff notes —
+# not for the tracked repo; keep locally)
+NODE1.md
+HANDOFF.md
