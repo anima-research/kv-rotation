@@ -357,6 +357,80 @@ class Session:
             "top_p": self.config.top_p,
         }
 
+    # ------------------------------------------------------------------
+    # fork / reroll / export (the A/B atomics)
+    # ------------------------------------------------------------------
+
+    def clone(self) -> "Session":
+        """Fork: same transcript/config, NEW session id and a fresh connector
+        store (first turn re-prefills; branches are fully independent after)."""
+        import copy
+
+        s = object.__new__(Session)
+        s.__dict__.update(self.__dict__)
+        s.session_id = uuid.uuid4().hex[:12]
+        s.live_ids = list(self.live_ids)
+        s.turns = copy.deepcopy(self.turns)
+        s.events = list(self.events)
+        s.config = self.config.model_copy()
+        s._generation = 0
+        s.store_len = 0
+        s._boundary = 0
+        s._pending_store_keep = None
+        if self.bank_path is not None:
+            s.bank_path = self.bank_path.parent / f"{s.session_id}.jsonl"
+        s._bank({"type": "fork", "parent": self.session_id})
+        return s
+
+    def pop_model_turn(self) -> Turn:
+        """Remove the last (model) turn for a reroll. The connector store still
+        holds the exact prompt that produced it, so the reroll request reuses
+        the full claimed prefix and just resamples."""
+        if not self.turns or self.turns[-1].role != "model":
+            raise LedgerError("last turn is not a model turn; nothing to reroll")
+        last = self.turns.pop()
+        self.live_ids = self.live_ids[: last.start]
+        self._boundary = min(self._boundary, last.start)
+        self._bank({"type": "reroll_pop", "turn_index": last.index})
+        return last
+
+    def build_reroll_request(self) -> dict[str, Any]:
+        """Like build_request but with no new user turn and no fresh planning."""
+        tail = self.reply_prefill_ids()
+        kvrot: dict[str, Any] = {"session_id": self.connector_session_id}
+        if self._pending_store_keep and self.store_len > 0:
+            kvrot["plan"] = {
+                "keep": list(self._pending_store_keep), "src_len": self.store_len,
+            }
+        return {
+            "prompt_ids": self.live_ids + tail,
+            "kvrot": kvrot,
+            "prefill_tail_ids": tail,
+            "stop_token_ids": list(self._stop_ids),
+            "event": None,
+            "max_tokens": self.config.max_reply_tokens,
+            "temperature": self.config.temperature,
+            "top_p": self.config.top_p,
+        }
+
+    def export_dict(self) -> dict[str, Any]:
+        return {
+            "kvrot_playground_export": 1,
+            "bot_name": self.bot_name,
+            "user_name": self.user_name,
+            "config": self.config.model_dump(),
+            "turns": [
+                {"role": t.role, "speaker": t.speaker, "text": t.text,
+                 "evicted": t.evicted}
+                for t in self.turns
+            ],
+            "events": [
+                {"turn_indices": e.turn_indices, "evicted_tokens": e.evicted_tokens,
+                 "policy": e.policy, "recompute": e.recompute}
+                for e in self.events
+            ],
+        }
+
     def mark_synced(self, prompt_len: int) -> None:
         """Call after a successful reply: the connector saved the full prompt,
         so its store now equals the ledger prefix of that length (the shipped

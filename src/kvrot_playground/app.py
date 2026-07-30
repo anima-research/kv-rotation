@@ -188,6 +188,90 @@ async def send_turn(sid: str, body: TurnBody):
         return {"reply": result.text.strip(), "stats": stats.__dict__, "state": s.view()}
 
 
+@app.post("/api/sessions/{sid}/fork")
+async def fork_session(sid: str):
+    s = _session(sid)
+    if _locks[sid].locked():
+        raise HTTPException(409, "a turn is in flight")
+    _evict_lru_sessions()
+    f = s.clone()
+    _sessions[f.session_id] = f
+    _locks[f.session_id] = asyncio.Lock()
+    _last_used[f.session_id] = time.monotonic()
+    return f.view()
+
+
+@app.post("/api/sessions/{sid}/reroll")
+async def reroll(sid: str):
+    s = _session(sid)
+    lock = _locks[sid]
+    if lock.locked():
+        raise HTTPException(409, "a turn is already in flight")
+    async with lock:
+        import random as _random
+
+        s.pop_model_turn()
+        req = s.build_reroll_request()
+        try:
+            result = await asyncio.to_thread(
+                _client.complete, req["prompt_ids"],
+                max_tokens=req["max_tokens"], temperature=req["temperature"],
+                top_p=req["top_p"], stop_token_ids=req["stop_token_ids"],
+                seed=_random.randint(0, 2**31), kvrot=req["kvrot"],
+            )
+        except VllmClientError as e:
+            raise HTTPException(502, f"vLLM request failed: {e}") from e
+        s.add_model_turn(result.token_ids, result.text, req["prefill_tail_ids"])
+        s.mark_synced(len(req["prompt_ids"]))
+        stats = TurnStats(
+            wall_s=round(result.wall_s, 3),
+            claimed_tokens=int(result.kvrot_echo.get("claimed_tokens") or 0),
+            prompt_tokens=result.prompt_tokens, gen_tokens=result.gen_tokens,
+            store_tokens=int(result.kvrot_echo.get("stored_tokens") or 0),
+        )
+        return {"reply": result.text.strip(), "stats": stats.__dict__, "state": s.view()}
+
+
+@app.get("/api/sessions/{sid}/export")
+async def export_session(sid: str):
+    s = _session(sid)
+    return JSONResponse(
+        s.export_dict(),
+        headers={"Content-Disposition": f"attachment; filename=kvrot-{sid}.json"},
+    )
+
+
+class ImportBody(BaseModel):
+    export: dict
+
+
+@app.post("/api/sessions/import")
+async def import_session(body: ImportBody):
+    data = body.export
+    if data.get("kvrot_playground_export") != 1:
+        raise HTTPException(400, "not a kvrot playground export")
+    _evict_lru_sessions()
+    tok = _get_tokenizer()
+    from kvrot_playground.session import PlaygroundConfig as PC
+
+    turns = [t for t in data.get("turns", []) if not t.get("evicted")]
+    preamble = turns[0]["text"] if turns and turns[0]["role"] == "system" else None
+    s = Session(
+        tok, bot_name=BOT_NAME, user_name=data.get("user_name", "User"),
+        config=PC(**data.get("config", {})), preamble=preamble,
+    )
+    s.bank_path = BANK_DIR / f"{s.session_id}.jsonl"
+    for t in turns[1:]:
+        if t["role"] == "user":
+            s.add_user_turn(t["text"])
+        elif t["role"] == "model":
+            s.add_model_turn(s._encode(t["text"]), t["text"], s.reply_prefill_ids())
+    _sessions[s.session_id] = s
+    _locks[s.session_id] = asyncio.Lock()
+    _last_used[s.session_id] = time.monotonic()
+    return s.view()
+
+
 class SeedBody(BaseModel):
     template: str = "archive"
     doc_index: int | None = None

@@ -266,6 +266,54 @@ async function seedSession() {
 qs("#seed-btn").addEventListener("click", seedSession);
 loadSeedOptions();
 
+qs("#fork-btn").addEventListener("click", async () => {
+  if (!session || busy) return;
+  const f = await api(`/api/sessions/${session.session_id}/fork`, { method: "POST" });
+  const u = new URL(location.href);
+  u.searchParams.set("session", f.session_id);
+  window.open(u.toString(), "_blank");
+  qs("#stats-strip").innerHTML =
+    `forked → <b>${f.session_id}</b> (opened in new tab; branches are independent)`;
+});
+
+qs("#reroll-btn").addEventListener("click", async () => {
+  if (!session || busy) return;
+  busy = true; qs("#reroll-btn").disabled = true;
+  qs("#stats-strip").innerHTML = "rerolling last reply…";
+  try {
+    const out = await api(`/api/sessions/${session.session_id}/reroll`, { method: "POST" });
+    session = out.state;
+    render(session, out.stats);
+  } catch (e) {
+    qs("#stats-strip").innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+  } finally { busy = false; qs("#reroll-btn").disabled = false; }
+});
+
+qs("#export-btn").addEventListener("click", () => {
+  if (!session) return;
+  const a = document.createElement("a");
+  a.href = `/api/sessions/${session.session_id}/export` + (TOKEN ? `?token=${TOKEN}` : "");
+  a.download = `kvrot-${session.session_id}.json`;
+  a.click();
+});
+
+qs("#import-btn").addEventListener("click", () => qs("#import-file").click());
+qs("#import-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    const s = await api("/api/sessions/import", {
+      method: "POST", body: JSON.stringify({ export: data }),
+    });
+    const u = new URL(location.href);
+    u.searchParams.set("session", s.session_id);
+    location.href = u.toString();
+  } catch (err) {
+    qs("#stats-strip").innerHTML = `<span style="color:var(--red)">${err.message}</span>`;
+  }
+});
+
 qs("#apply-btn").addEventListener("click", applyConfig);
 qs("#evict-btn").addEventListener("click", forceEvict);
 qs("#new-btn").addEventListener("click", newSession);

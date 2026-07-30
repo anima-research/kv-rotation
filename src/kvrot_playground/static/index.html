@@ -29,7 +29,11 @@
   <!-- chat column -->
   <div class="card chat-card">
     <h2>Conversation
-      <span class="tag" id="policy-tag">sink_rotate</span>
+      <span style="display:flex;gap:6px;align-items:center;">
+        <button class="btn" id="reroll-btn" title="resample the last reply (full KV reuse)">Reroll</button>
+        <button class="btn" id="fork-btn" title="branch this session into a new tab for A/B">Fork</button>
+        <span class="tag" id="policy-tag">sink_rotate</span>
+      </span>
     </h2>
     <div class="chat-scroll" id="chat-scroll">
       <div class="chat-empty" id="chat-empty">start a conversation below —
@@ -81,6 +85,9 @@
         <button class="btn" id="apply-btn">Apply</button>
         <button class="btn" id="evict-btn" title="force one eviction round now">Evict now</button>
         <button class="btn btn-danger" id="new-btn">New session</button>
+        <button class="btn" id="export-btn">Export</button>
+        <button class="btn" id="import-btn">Import</button>
+        <input type="file" id="import-file" accept=".json" style="display:none">
       </div>
     </div>
 

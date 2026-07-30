@@ -229,3 +229,31 @@ def test_build_seed_appends_evictable_turns():
     # codes present in ledger text
     joined = " ".join(t.text for t in s.turns)
     assert all(n["code"] in joined for n in needles)
+
+
+def test_fork_is_independent_with_fresh_store():
+    s = make_session()
+    do_turn(s, "hello there", "hi friend")
+    f = s.clone()
+    assert f.session_id != s.session_id
+    assert f.live_ids == s.live_ids and f.store_len == 0
+    f.add_user_turn("only in fork")
+    assert len(f.live_ids) > len(s.live_ids)
+    assert f.connector_session_id.endswith(".g0")
+
+
+def test_reroll_reuses_exact_prompt():
+    s = make_session()
+    req1 = do_turn(s, "tell me things", "first reply words")
+    s.pop_model_turn()
+    req2 = s.build_reroll_request()
+    assert req2["prompt_ids"] == req1["prompt_ids"]  # full KV reuse
+    assert s.store_len == len(req1["prompt_ids"])
+
+
+def test_export_import_shape():
+    s = make_session()
+    do_turn(s, "hello", "world")
+    d = s.export_dict()
+    assert d["kvrot_playground_export"] == 1
+    assert [t["role"] for t in d["turns"]] == ["system", "user", "model"]
