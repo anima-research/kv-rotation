@@ -156,3 +156,58 @@ def test_model_turn_normalizes_delimiter():
     t = s.add_model_turn(gen, "hello world", req["prefill_tail_ids"])
     ids = s.live_ids[t.start : t.end]
     assert ids.count(0) == 1 and ids[-1] == 0
+
+
+# ---------------------------------------------------------------------------
+# chat render mode (ChatML compiled chunks — Trinity-Preview framing)
+# ---------------------------------------------------------------------------
+
+
+class ChatMLStubTokenizer(StubTokenizer):
+    chat_template = "{{'<|im_start|>'}}..."  # ChatML marker is what matters
+
+    def __init__(self):
+        super().__init__()
+        self.vocab["<|im_start|>"] = 9001
+        self.vocab["<|im_end|>"] = 9002
+
+    def encode(self, text, add_special_tokens=False):
+        # crude special-token-aware split for the stub
+        out = []
+        for chunk in text.replace("<|im_start|>", " <|im_start|> ").replace(
+            "<|im_end|>", " <|im_end|> "
+        ).split():
+            if chunk not in self.vocab:
+                self.vocab[chunk] = 2 + len(self.vocab)
+            out.append(self.vocab[chunk])
+        return out
+
+    def convert_tokens_to_ids(self, t):
+        return self.vocab.get(t, -1)
+
+
+def test_chat_mode_framing_and_stops():
+    s = Session(
+        ChatMLStubTokenizer(), bot_name="Trinity",
+        config=PlaygroundConfig(budget=4096), preamble="be yourself",
+    )
+    assert s.mode == "chat"
+    im_end = s.tok.vocab["<|im_end|>"]
+    req = s.build_request("hello there")
+    assert req["stop_token_ids"] == [im_end]
+    # generation prefill is the assistant header
+    assert req["prefill_tail_ids"][0] == s.tok.vocab["<|im_start|>"]
+    # reply with the stop token attached must normalize to one closing im_end
+    gen = s._encode("hi friend") + [im_end]
+    t = s.add_model_turn(gen, "hi friend", req["prefill_tail_ids"])
+    ids = s.live_ids[t.start : t.end]
+    assert ids.count(im_end) == 1
+    s.mark_synced(len(req["prompt_ids"]))
+    # prefix invariant still holds in chat mode
+    req2 = s.build_request("and again")
+    assert req2["prompt_ids"][: len(req["prompt_ids"])] == req["prompt_ids"]
+
+
+def test_auto_mode_falls_back_to_prefill_without_template():
+    s = make_session()
+    assert s.mode == "prefill"

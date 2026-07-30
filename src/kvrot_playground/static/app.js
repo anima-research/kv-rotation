@@ -139,7 +139,17 @@ function render(state, stats) {
     const toks = t.evicted ? t.original_tokens : t.live_tokens;
     el.innerHTML = `<div class="who">${who} <span class="toks">${toks} tok</span></div>` +
                    `<div class="body"></div>`;
-    el.querySelector(".body").textContent = t.text;
+    // collapse huge seeded preambles: show head + tail around a fold note
+    const body = el.querySelector(".body");
+    if (t.role === "system" && t.text.length > 900) {
+      body.textContent =
+        t.text.slice(0, 400) +
+        `\n\n··· [${toks} tokens of seeded context collapsed] ···\n\n` +
+        t.text.slice(-300);
+      body.title = "seeded context (collapsed for display; fully in the model's cache)";
+    } else {
+      body.textContent = t.text;
+    }
     scroll.appendChild(el);
   }
   scroll.scrollTop = scroll.scrollHeight;
@@ -213,6 +223,22 @@ qs("#new-btn").addEventListener("click", newSession);
 
 pollHealth();
 setInterval(pollHealth, 10_000);
-newSession().catch((e) => {
+
+// ?session=<id> attaches to an existing (e.g. seeded) session instead of
+// creating a fresh one
+const ATTACH = new URLSearchParams(location.search).get("session");
+(ATTACH
+  ? api(`/api/sessions/${ATTACH}`).then((s) => {
+      session = s;
+      // reflect the seeded config in the controls
+      qs("#ctl-policy").value = s.config.policy;
+      qs("#ctl-budget").value = s.config.budget;
+      qs("#ctl-sinks").value = s.config.num_sink_tokens;
+      qs("#ctl-maxreply").value = s.config.max_reply_tokens;
+      qs("#ctl-temp").value = s.config.temperature;
+      render(s, null);
+    })
+  : newSession()
+).catch((e) => {
   qs("#stats-strip").innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
 });

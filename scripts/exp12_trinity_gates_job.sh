@@ -21,11 +21,16 @@ VLLM_ENV_BIN="${VLLM_ENV_BIN:?set VLLM_ENV_BIN to the bin/ of a vLLM 0.16 env}"
 HF_PYTHON="${HF_PYTHON:-$VLLM_ENV_BIN/python}"
 MODEL="${MODEL:-/models/Trinity-Large-Preview}"
 PORT="${PORT:-8013}"
+# TrueBase (max_position_embeddings 8192): MAX_MODEL_LEN=8192 CTX_TOKENS=6144
+# EVICT_TOKENS=1536 BANK=runs/exp12_gates_truebase.json
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+CTX_TOKENS="${CTX_TOKENS:-8192}"
+EVICT_TOKENS="${EVICT_TOKENS:-2048}"
+BANK="${BANK:-runs/exp12_gates_trinity.json}"
 
 export PYTHONPATH=src PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-BANK=runs/exp12_gates_trinity.json
-SRVLOG=runs/exp12_vllm_server_trinity.log
+SRVLOG="${BANK%.json}_server.log"
 mkdir -p runs
 
 echo "[job] starting trinity vLLM server (tp=8, port $PORT)"
@@ -45,7 +50,7 @@ echo "==== attempt $(date '+%F %T') pid $$ ====" >> "$SRVLOG"
 # * APC off + kv_load_failure_policy=fail are gate requirements (§5.5, §7).
 "$VLLM_ENV_BIN/vllm" serve "$MODEL" --served-model-name trinity -tp 8 --port "$PORT" \
     --attention-backend FLASH_ATTN --disable-custom-all-reduce \
-    --gpu-memory-utilization 0.85 --max-model-len 16384 \
+    --gpu-memory-utilization 0.85 --max-model-len "$MAX_MODEL_LEN" \
     --no-enable-prefix-caching --disable-hybrid-kv-cache-manager \
     --kv-transfer-config '{"kv_connector": "KvrotConnector",
         "kv_connector_module_path": "kvrot_vllm.connector",
@@ -76,7 +81,7 @@ echo "[job] running vllm phase"
 "$VLLM_ENV_BIN/python" experiments/exp12_vllm_gates.py vllm \
     --base-url "http://localhost:$PORT" --model-path "$MODEL" \
     --out "$BANK" --data data/eval_docs.jsonl \
-    --ctx-tokens 8192 --gen-tokens 48 --evict-tokens 2048
+    --ctx-tokens "$CTX_TOKENS" --gen-tokens 48 --evict-tokens "$EVICT_TOKENS"
 
 echo "[job] tearing down server"
 kill "$SERVER_PID"

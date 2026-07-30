@@ -43,6 +43,13 @@ DEFAULT_PREAMBLE = (
 
 
 class PlaygroundConfig(BaseModel):
+    # "chat"    — the model's native ChatML template, compiled to exact
+    #             append-only token chunks (instruct models: keeps the
+    #             assistant persona; bare prefill framing makes them act
+    #             like base models — observed live on Trinity-Preview)
+    # "prefill" — speaker-prefixed transcript + EOS delimiters (base models)
+    # "auto"    — chat if the tokenizer ships a ChatML template, else prefill
+    render_mode: Literal["auto", "chat", "prefill"] = "auto"
     policy: Policy = "sink_rotate"
     budget: int = Field(8192, ge=32, description="token budget that triggers eviction")
     evict_to_frac: float = Field(0.75, gt=0.1, le=1.0, description="evict down to this fraction of budget")
@@ -136,10 +143,31 @@ class Session:
             raise LedgerError("tokenizer has no eos_token_id; need a turn delimiter")
         self._delim = [int(self.tok.eos_token_id)]
 
+        mode = self.config.render_mode
+        template = getattr(self.tok, "chat_template", None) or ""
+        if mode == "auto":
+            mode = "chat" if "<|im_start|>" in template else "prefill"
+        if mode == "chat" and "<|im_start|>" not in template:
+            raise LedgerError(
+                "chat render_mode requires a ChatML template on this tokenizer"
+            )
+        self.mode: str = mode
+        if mode == "chat":
+            im_end = self.tok.convert_tokens_to_ids("<|im_end|>")
+            if im_end is None or im_end < 0:
+                raise LedgerError("<|im_end|> not in vocab; cannot compile ChatML")
+            self._stop_ids = [int(im_end)]
+        else:
+            self._stop_ids = list(self._delim)
+
         bos = getattr(self.tok, "bos_token_id", None)
         prefix_ids = [int(bos)] if bos is not None else []
         text = (preamble if preamble is not None else DEFAULT_PREAMBLE).format(bot=bot_name)
-        self._append_turn("system", "system", text, prefix_ids=prefix_ids)
+        if mode == "chat":
+            body = self._encode(f"<|im_start|>system\n{text}<|im_end|>\n")
+        else:
+            body = self._encode(text) + self._delim
+        self._append_turn("system", "system", text, prefix_ids=prefix_ids, body_ids=body)
 
     # ------------------------------------------------------------------
     # rendering / ledger
@@ -156,10 +184,11 @@ class Session:
         self, role: str, speaker: str, text: str, *, prefix_ids: list[int] | None = None,
         body_ids: list[int] | None = None,
     ) -> Turn:
-        piece = body_ids if body_ids is not None else self._encode(
-            text if role == "system" else f"{speaker}: {text}"
-        )
-        ids = (prefix_ids or []) + piece + self._delim
+        """``body_ids`` must be the COMPLETE turn body including any framing/
+        delimiters; when omitted, prefill-style framing is applied."""
+        if body_ids is None:
+            body_ids = self._encode(f"{speaker}: {text}") + self._delim
+        ids = (prefix_ids or []) + body_ids
         start = len(self.live_ids)
         self.live_ids.extend(ids)
         turn = Turn(
@@ -172,22 +201,31 @@ class Session:
         return turn
 
     def add_user_turn(self, text: str) -> Turn:
+        if self.mode == "chat":
+            body = self._encode(f"<|im_start|>user\n{text}<|im_end|>\n")
+            return self._append_turn("user", self.user_name, text, body_ids=body)
         return self._append_turn("user", self.user_name, text)
 
     def add_model_turn(self, gen_ids: list[int], text: str, prompt_tail_ids: list[int]) -> Turn:
         """Record the model's reply. ``prompt_tail_ids`` is the generation
-        prefill (the ``"{bot}:"`` tag) that preceded ``gen_ids`` in the prompt;
-        both are part of the turn so ledger == connector store."""
+        prefill (assistant header / ``"{bot}:"`` tag) that preceded ``gen_ids``
+        in the prompt; both are part of the turn so ledger == connector store."""
         ids = list(gen_ids)
-        while ids and ids[-1] == self._delim[0]:
-            ids.pop()  # normalize: exactly one delimiter, appended below
+        while ids and ids[-1] in (self._stop_ids[0], self._delim[0]):
+            ids.pop()  # normalize: exactly one closing delimiter, added below
+        if self.mode == "chat":
+            closing = self._stop_ids + self._encode("\n")
+        else:
+            closing = list(self._delim)
         return self._append_turn(
             "model", self.bot_name, text.strip(),
-            prefix_ids=list(prompt_tail_ids), body_ids=ids,
+            prefix_ids=list(prompt_tail_ids), body_ids=ids + closing,
         )
 
     def reply_prefill_ids(self) -> list[int]:
-        """The generation prefill appended after the transcript: ``"{bot}:"``."""
+        """The generation prefill appended after the transcript."""
+        if self.mode == "chat":
+            return self._encode("<|im_start|>assistant\n")
         return self._encode(f"{self.bot_name}:")
 
     # ------------------------------------------------------------------
@@ -312,7 +350,7 @@ class Session:
             "prompt_ids": prompt_ids,
             "kvrot": kvrot,
             "prefill_tail_ids": tail,
-            "stop_token_ids": self._delim,
+            "stop_token_ids": list(self._stop_ids),
             "event": event,
             "max_tokens": self.config.max_reply_tokens,
             "temperature": self.config.temperature,
