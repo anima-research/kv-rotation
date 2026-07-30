@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kvrot Playground</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header>
+  <h1><span>Kvrot</span> Playground</h1>
+  <div class="header-actions">
+    <span class="model-tag" id="model-tag">—</span>
+    <div class="poll-info">
+      <span class="status-dot" id="conn-dot"></span>
+      <span id="conn-status">connecting…</span>
+    </div>
+  </div>
+</header>
+
+<div class="subtitle">
+  rolling-context chat with live KV-cache rotation — evicted turns are
+  <s>struck out</s>; the model keeps their influence without their tokens
+</div>
+
+<div class="layout">
+
+  <!-- chat column -->
+  <div class="card chat-card">
+    <h2>Conversation
+      <span class="tag" id="policy-tag">sink_rotate</span>
+    </h2>
+    <div class="chat-scroll" id="chat-scroll">
+      <div class="chat-empty" id="chat-empty">start a conversation below —
+        when the context passes the budget, the oldest turns get evicted and
+        the survivors' keys are re-rotated in place</div>
+    </div>
+    <div class="stats-strip" id="stats-strip"></div>
+    <form id="chat-form" class="chat-input-row">
+      <textarea id="chat-input" rows="2" placeholder="say something…" ></textarea>
+      <button type="submit" class="btn btn-accent" id="send-btn">Send</button>
+    </form>
+  </div>
+
+  <!-- instrument rail -->
+  <div class="rail">
+
+    <div class="card">
+      <h2>Cache</h2>
+      <div class="meter-labels">
+        <span id="meter-live">0 tok</span>
+        <span id="meter-budget">budget 8192</span>
+      </div>
+      <div class="meter-track"><div class="meter-fill" id="meter-fill"></div></div>
+      <div class="kv-stats" id="kv-stats">
+        <div class="stat"><span class="stat-value" id="stat-store">—</span><span class="stat-label">store tok</span></div>
+        <div class="stat"><span class="stat-value" id="stat-claim">—</span><span class="stat-label">last claim</span></div>
+        <div class="stat"><span class="stat-value" id="stat-turnms">—</span><span class="stat-label">turn s</span></div>
+        <div class="stat"><span class="stat-value" id="stat-evicted">0</span><span class="stat-label">evicted tok</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Policy</h2>
+      <div class="controls">
+        <label>eviction
+          <select id="ctl-policy">
+            <option value="sink_rotate">sink_rotate (Tier 0+1)</option>
+            <option value="oldest">oldest (no sinks)</option>
+            <option value="recompute">recompute (baseline)</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+        <label>budget <input type="number" id="ctl-budget" value="8192" min="32" step="256"></label>
+        <label>sink tokens <input type="number" id="ctl-sinks" value="4" min="0" max="64"></label>
+        <label>max reply <input type="number" id="ctl-maxreply" value="320" min="16" max="1024"></label>
+        <label>temperature <input type="number" id="ctl-temp" value="0.8" min="0" max="2" step="0.1"></label>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="apply-btn">Apply</button>
+        <button class="btn" id="evict-btn" title="force one eviction round now">Evict now</button>
+        <button class="btn btn-danger" id="new-btn">New session</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Evictions</h2>
+      <div class="events" id="events-list"><div class="chat-empty">none yet</div></div>
+    </div>
+
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

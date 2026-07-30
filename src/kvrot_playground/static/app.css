@@ -1,0 +1,121 @@
+/* kvrot playground — mocks the heimdall webui design language:
+   near-black surfaces, hairline borders, mono type, square corners,
+   uppercase micro-labels, green/yellow/red accents. */
+
+:root {
+  --bg: #050608;
+  --surface: #0a0c12;
+  --elevated: #10131a;
+  --border: #1a2030;
+  --border-active: #304060;
+  --text: #d0d8e0;
+  --text-dim: #607080;
+  --text-ghost: #303840;
+  --green: #00e868;
+  --red: #ff2020;
+  --yellow: #e8a000;
+  --orange: #d06020;
+  --accent: #4488ff;
+  --cyan: #00ccaa;
+  --radius: 2px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Libertinus Mono', 'SF Mono', 'Cascadia Code', monospace;
+  background: var(--bg); color: var(--text);
+  padding: 20px; font-size: 13px;
+}
+
+header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 6px; }
+header h1 { font-size: 18px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+header h1 span { color: var(--green); }
+.header-actions { display: flex; align-items: center; gap: 16px; }
+.model-tag { font-size: 11px; color: var(--cyan); border: 1px solid var(--border); padding: 2px 8px; }
+.poll-info { color: var(--text-dim); font-size: 12px; }
+.status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; background: var(--yellow); }
+.status-dot.ok { background: var(--green); }
+.status-dot.err { background: var(--red); }
+
+.subtitle { color: var(--text-dim); font-size: 12px; margin-bottom: 16px; }
+.subtitle s { color: var(--text-ghost); }
+
+.layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
+@media (max-width: 950px) { .layout { grid-template-columns: 1fr; } }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.card h2 {
+  font-size: 14px; font-weight: 600; margin-bottom: 12px;
+  display: flex; justify-content: space-between; align-items: center;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.tag { font-size: 11px; padding: 2px 8px; font-weight: 400; background: var(--elevated); border: 1px solid var(--border); color: var(--cyan); text-transform: none; }
+
+.rail { display: flex; flex-direction: column; gap: 16px; }
+
+/* ── chat ─────────────────────────────────────────────────────────── */
+.chat-card { display: flex; flex-direction: column; min-height: 70vh; }
+.chat-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; max-height: 62vh; }
+.chat-empty { color: var(--text-ghost); font-size: 12px; padding: 12px 4px; }
+
+.msg { border-left: 2px solid var(--border-active); padding: 6px 10px; }
+.msg .who { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 3px; display: flex; gap: 8px; }
+.msg .who .toks { color: var(--text-ghost); }
+.msg .body { white-space: pre-wrap; line-height: 1.45; }
+.msg.user { border-left-color: var(--accent); }
+.msg.model { border-left-color: var(--green); }
+.msg.system { border-left-color: var(--yellow); }
+.msg.system .body { color: var(--text-dim); font-size: 12px; }
+
+.msg.evicted { border-left-color: var(--text-ghost); opacity: 0.55; }
+.msg.evicted .body { text-decoration: line-through; color: var(--text-ghost); }
+.msg.evicted .who::after { content: 'EVICTED — influence retained'; color: var(--orange); }
+
+.stats-strip { font-size: 11px; color: var(--text-dim); padding: 8px 2px; border-top: 1px solid var(--border); min-height: 30px; }
+.stats-strip b { color: var(--text); font-weight: 600; }
+.stats-strip .rot { color: var(--green); }
+
+.chat-input-row { display: flex; gap: 8px; padding-top: 8px; }
+.chat-input-row textarea {
+  flex: 1; background: var(--elevated); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 13px; padding: 8px;
+  border-radius: var(--radius); resize: vertical;
+}
+.chat-input-row textarea:focus { outline: none; border-color: var(--border-active); }
+
+/* ── buttons / controls ───────────────────────────────────────────── */
+.btn {
+  background: var(--elevated); border: 1px solid var(--border); color: var(--text);
+  font-family: inherit; font-size: 12px; padding: 6px 14px;
+  border-radius: var(--radius); cursor: pointer;
+}
+.btn:hover { border-color: var(--border-active); }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn-accent { border-color: var(--accent); color: var(--accent); }
+.btn-danger { border-color: var(--red); color: var(--red); }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+.controls { display: flex; flex-direction: column; gap: 8px; }
+.controls label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.controls input, .controls select {
+  background: var(--elevated); border: 1px solid var(--border); color: var(--text);
+  font-family: inherit; font-size: 12px; padding: 4px 6px; width: 150px;
+  border-radius: var(--radius);
+}
+
+/* ── cache meter ──────────────────────────────────────────────────── */
+.meter-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.meter-track { height: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.meter-fill { height: 100%; width: 0%; background: var(--green); transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+.meter-fill.warm { background: var(--yellow); }
+.meter-fill.hot { background: var(--orange); }
+
+.kv-stats { display: flex; gap: 16px; font-size: 11px; color: var(--text-dim); padding-top: 10px; margin-top: 10px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.kv-stats .stat { display: flex; flex-direction: column; gap: 2px; }
+.kv-stats .stat-value { color: var(--text); font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+.kv-stats .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* ── eviction events ──────────────────────────────────────────────── */
+.events { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+.event-row { color: var(--text-dim); border-left: 2px solid var(--orange); padding: 3px 8px; }
+.event-row b { color: var(--text); }
+.event-row .mode { color: var(--cyan); }
