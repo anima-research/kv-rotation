@@ -75,6 +75,35 @@ class NewSessionBody(BaseModel):
 
 class TurnBody(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
+    # koto-rack style literal A/B: also run this turn on a shadow control
+    # session (recompute policy, mirrored transcript); only the primary
+    # reply re-enters context — control is display-only
+    ab: bool = False
+
+
+_ab_partner: dict[str, "Session"] = {}
+
+
+def _get_control(s: Session) -> Session:
+    """Shadow session: same transcript texts, recompute policy (the honest
+    baseline cache management). Lazily created; resynced every A/B turn."""
+    c = _ab_partner.get(s.session_id)
+    if c is None:
+        tok = _get_tokenizer()
+        cfg = s.config.model_copy(update={"policy": "recompute"})
+        c = Session(
+            tok, bot_name=s.bot_name, user_name=s.user_name, config=cfg,
+            preamble=s.turns[0].text if s.turns else None,
+        )
+        _ab_partner[s.session_id] = c
+    # mirror any turns the control hasn't seen (skip system turn 0)
+    for t in s.turns[len(c.turns):]:
+        if t.role == "user":
+            c.add_user_turn(t.text)
+        elif t.role == "model":
+            c.add_model_turn(c._encode(t.text), t.text, c.reply_prefill_ids())
+    c.config = s.config.model_copy(update={"policy": "recompute"})
+    return c
 
 
 class ConfigBody(BaseModel):
@@ -159,22 +188,41 @@ async def send_turn(sid: str, body: TurnBody):
     if lock.locked():
         raise HTTPException(409, "a turn is already in flight for this session")
     async with lock:
+        control = _get_control(s) if body.ab else None
         req = s.build_request(body.text)
-        try:
-            result = await asyncio.to_thread(
-                _client.complete,
-                req["prompt_ids"],
-                max_tokens=req["max_tokens"],
-                temperature=req["temperature"],
-                top_p=req["top_p"],
-                stop_token_ids=req["stop_token_ids"],
-                kvrot=req["kvrot"],
+        req_c = control.build_request(body.text) if control is not None else None
+
+        def _run(r):
+            return _client.complete(
+                r["prompt_ids"], max_tokens=r["max_tokens"],
+                temperature=r["temperature"], top_p=r["top_p"],
+                stop_token_ids=r["stop_token_ids"], kvrot=r["kvrot"],
             )
+
+        try:
+            if req_c is not None:
+                result, result_c = await asyncio.gather(
+                    asyncio.to_thread(_run, req), asyncio.to_thread(_run, req_c)
+                )
+            else:
+                result = await asyncio.to_thread(_run, req)
+                result_c = None
         except VllmClientError as e:
             raise HTTPException(502, f"vLLM request failed: {e}") from e
 
-        s.add_model_turn(result.token_ids, result.text, req["prefill_tail_ids"])
+        t = s.add_model_turn(result.token_ids, result.text, req["prefill_tail_ids"])
         s.mark_synced(len(req["prompt_ids"]))
+        if result_c is not None and control is not None:
+            # control reply is display-only; control's ledger gets the PRIMARY
+            # reply mirrored on the next sync (koto rule: control never
+            # re-enters context)
+            control.mark_synced(len(req_c["prompt_ids"]))
+            t.meta["ab_control"] = result_c.text.strip()
+            t.meta["ab_stats"] = {
+                "wall_s": round(result_c.wall_s, 3),
+                "claimed_tokens": int(result_c.kvrot_echo.get("claimed_tokens") or 0),
+                "policy": "recompute",
+            }
         ev = req["event"]
         stats = TurnStats(
             wall_s=round(result.wall_s, 3),
@@ -188,8 +236,29 @@ async def send_turn(sid: str, body: TurnBody):
         return {"reply": result.text.strip(), "stats": stats.__dict__, "state": s.view()}
 
 
+class ForkBody(BaseModel):
+    name: str = ""
+
+
+_names: dict[str, str] = {}
+
+
+@app.get("/api/sessions")
+async def list_sessions():
+    return [
+        {
+            "session_id": sid,
+            "name": _names.get(sid, ""),
+            "turns": len(s.turns),
+            "live_tokens": len(s.live_ids),
+            "policy": s.config.policy,
+        }
+        for sid, s in _sessions.items()
+    ]
+
+
 @app.post("/api/sessions/{sid}/fork")
-async def fork_session(sid: str):
+async def fork_session(sid: str, body: ForkBody | None = None):
     s = _session(sid)
     if _locks[sid].locked():
         raise HTTPException(409, "a turn is in flight")
@@ -198,6 +267,8 @@ async def fork_session(sid: str):
     _sessions[f.session_id] = f
     _locks[f.session_id] = asyncio.Lock()
     _last_used[f.session_id] = time.monotonic()
+    if body and body.name:
+        _names[f.session_id] = body.name
     return f.view()
 
 
@@ -210,6 +281,9 @@ async def reroll(sid: str):
     async with lock:
         import random as _random
 
+        old = s.turns[-1] if s.turns and s.turns[-1].role == "model" else None
+        old_variants = list(old.variants) if old else []
+        old_meta = dict(old.meta) if old else {}
         s.pop_model_turn()
         req = s.build_reroll_request()
         try:
@@ -221,7 +295,10 @@ async def reroll(sid: str):
             )
         except VllmClientError as e:
             raise HTTPException(502, f"vLLM request failed: {e}") from e
-        s.add_model_turn(result.token_ids, result.text, req["prefill_tail_ids"])
+        t = s.add_model_turn(result.token_ids, result.text, req["prefill_tail_ids"])
+        t.variants = old_variants + [t.text]
+        t.active_variant = len(t.variants) - 1
+        t.meta = old_meta
         s.mark_synced(len(req["prompt_ids"]))
         stats = TurnStats(
             wall_s=round(result.wall_s, 3),
@@ -230,6 +307,26 @@ async def reroll(sid: str):
             store_tokens=int(result.kvrot_echo.get("stored_tokens") or 0),
         )
         return {"reply": result.text.strip(), "stats": stats.__dict__, "state": s.view()}
+
+
+class VariantBody(BaseModel):
+    variant: int = Field(ge=0)
+
+
+@app.post("/api/sessions/{sid}/variant")
+async def select_variant(sid: str, body: VariantBody):
+    """Switch the tail model turn's active variant (koto tail rule: non-tail
+    mutations should fork first)."""
+    s = _session(sid)
+    if _locks[sid].locked():
+        raise HTTPException(409, "a turn is in flight")
+    tail = s.turns[-1] if s.turns else None
+    if tail is None or tail.role != "model":
+        raise HTTPException(409, "tail is not a model turn")
+    if body.variant >= len(tail.variants):
+        raise HTTPException(400, "no such variant")
+    s.set_tail_variant(tail.variants[body.variant])
+    return s.view()
 
 
 @app.get("/api/sessions/{sid}/export")

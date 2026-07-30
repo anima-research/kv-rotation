@@ -30,8 +30,9 @@
   <div class="card chat-card">
     <h2>Conversation
       <span style="display:flex;gap:6px;align-items:center;">
+        <select id="branch-select" title="switch session/branch"></select>
         <button class="btn" id="reroll-btn" title="resample the last reply (full KV reuse)">Reroll</button>
-        <button class="btn" id="fork-btn" title="branch this session into a new tab for A/B">Fork</button>
+        <button class="btn" id="fork-btn" title="snapshot this session as a named branch">Fork</button>
         <span class="tag" id="policy-tag">sink_rotate</span>
       </span>
     </h2>
@@ -43,7 +44,12 @@
     <div class="stats-strip" id="stats-strip"></div>
     <form id="chat-form" class="chat-input-row">
       <textarea id="chat-input" rows="2" placeholder="say something…" ></textarea>
-      <button type="submit" class="btn btn-accent" id="send-btn">Send</button>
+      <div class="send-col">
+        <button type="submit" class="btn btn-accent" id="send-btn">Send</button>
+        <label class="ab-toggle" title="also answer from a recompute-policy shadow session; control reply is display-only">
+          <input type="checkbox" id="ab-toggle"> A/B
+        </label>
+      </div>
     </form>
   </div>
 

@@ -77,6 +77,19 @@ async function forceEvict() {
 
 /* ── turns ───────────────────────────────────────────────────────── */
 
+function bindVnav(el, t) {
+  el.querySelectorAll(".vnav button").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const v = parseInt(b.dataset.v, 10);
+      if (v < 0 || v >= t.variants.length || busy) return;
+      session = await api(`/api/sessions/${session.session_id}/variant`, {
+        method: "POST", body: JSON.stringify({ variant: v }),
+      });
+      render(session, null);
+    });
+  });
+}
+
 async function sendTurn(text) {
   if (!session || busy) return;
   busy = true;
@@ -85,7 +98,7 @@ async function sendTurn(text) {
   try {
     const out = await api(`/api/sessions/${session.session_id}/turns`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ab: qs("#ab-toggle").checked }),
     });
     session = out.state;
     render(session, out.stats);
@@ -132,13 +145,40 @@ function render(state, stats) {
   if (state.turns.length <= 1) {
     scroll.innerHTML = `<div class="chat-empty">start a conversation below</div>`;
   }
-  for (const t of state.turns) {
+  const lastModelIdx = state.turns.reduce(
+    (a, t, i) => (t.role === "model" ? i : a), -1
+  );
+  for (const [i, t] of state.turns.entries()) {
     const el = document.createElement("div");
     el.className = `msg ${t.role}${t.evicted ? " evicted" : ""}`;
     const who = t.role === "user" ? "you" : t.role === "model" ? state.bot_name : "scene";
     const toks = t.evicted ? t.original_tokens : t.live_tokens;
-    el.innerHTML = `<div class="who">${who} <span class="toks">${toks} tok</span></div>` +
+    // variant nav (koto ◀ n/total ▶) on the tail model turn
+    let vnav = "";
+    if (i === lastModelIdx && (t.variants || []).length > 1) {
+      vnav = `<span class="vnav">` +
+        `<button data-v="${t.active_variant - 1}">◀</button>` +
+        `<span class="vcount">${t.active_variant + 1}/${t.variants.length}</span>` +
+        `<button data-v="${t.active_variant + 1}">▶</button></span>`;
+    }
+    // literal A/B row: rotated (context) vs recompute control (display-only)
+    if (t.role === "model" && t.meta && t.meta.ab_control !== undefined) {
+      el.innerHTML =
+        `<div class="who">${who} <span class="toks">${toks} tok</span> ` +
+        `<span class="toks">A/B</span>${vnav}</div>` +
+        `<div class="abrow">` +
+        `<div class="col steered"><div class="col-label">${state.config.policy} (in context)</div><div class="body b-main"></div></div>` +
+        `<div class="col controlc"><div class="col-label">recompute control ` +
+        `(${(t.meta.ab_stats || {}).wall_s ?? "?"}s)</div><div class="body b-ctl"></div></div></div>`;
+      el.querySelector(".b-main").textContent = t.text;
+      el.querySelector(".b-ctl").textContent = t.meta.ab_control;
+      bindVnav(el, t);
+      scroll.appendChild(el);
+      continue;
+    }
+    el.innerHTML = `<div class="who">${who} <span class="toks">${toks} tok</span>${vnav}</div>` +
                    `<div class="body"></div>`;
+    bindVnav(el, t);
     // collapse huge seeded preambles: show head + tail around a fold note
     const body = el.querySelector(".body");
     if (t.text.length > 1200) {
@@ -265,15 +305,42 @@ async function seedSession() {
 
 qs("#seed-btn").addEventListener("click", seedSession);
 loadSeedOptions();
+refreshBranches();
+setInterval(refreshBranches, 15_000);
+
+async function refreshBranches() {
+  try {
+    const list = await api("/api/sessions");
+    const cur = session ? session.session_id : null;
+    qs("#branch-select").innerHTML = list
+      .map((s) =>
+        `<option value="${s.session_id}" ${s.session_id === cur ? "selected" : ""}>` +
+        `${s.name || s.session_id.slice(0, 6)} · ${s.turns}t/${s.live_tokens}tok</option>`
+      ).join("");
+  } catch {}
+}
+
+qs("#branch-select").addEventListener("change", async (e) => {
+  const sid = e.target.value;
+  if (!sid || (session && sid === session.session_id)) return;
+  session = await api(`/api/sessions/${sid}`);
+  render(session, null);
+  const u = new URL(location.href);
+  u.searchParams.set("session", sid);
+  history.replaceState(null, "", u.toString());
+});
 
 qs("#fork-btn").addEventListener("click", async () => {
   if (!session || busy) return;
-  const f = await api(`/api/sessions/${session.session_id}/fork`, { method: "POST" });
-  const u = new URL(location.href);
-  u.searchParams.set("session", f.session_id);
-  window.open(u.toString(), "_blank");
+  const name = prompt("branch name:", `fork-${session.session_id.slice(0, 4)}`);
+  if (name === null) return;
+  const f = await api(`/api/sessions/${session.session_id}/fork`, {
+    method: "POST", body: JSON.stringify({ name }),
+  });
+  await refreshBranches();
   qs("#stats-strip").innerHTML =
-    `forked → <b>${f.session_id}</b> (opened in new tab; branches are independent)`;
+    `forked → <b>${name || f.session_id}</b> (switch via the branch dropdown; ` +
+    `branches are fully independent)`;
 });
 
 qs("#reroll-btn").addEventListener("click", async () => {

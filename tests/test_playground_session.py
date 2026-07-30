@@ -257,3 +257,18 @@ def test_export_import_shape():
     d = s.export_dict()
     assert d["kvrot_playground_export"] == 1
     assert [t["role"] for t in d["turns"]] == ["system", "user", "model"]
+
+
+def test_variants_and_tail_switch():
+    s = make_session()
+    req = do_turn(s, "question one", "first answer")
+    t = s.turns[-1]
+    t.variants = ["first answer", "second answer"]
+    s.set_tail_variant("second answer")
+    tail = s.turns[-1]
+    assert tail.text == "second answer" and tail.active_variant == 1
+    assert tail.variants == ["first answer", "second answer"]
+    # ledger reflects the switch; store prefix invariant intact
+    assert s.live_ids[: s.store_len] and s.store_len == len(req["prompt_ids"])
+    req2 = s.build_request("next")
+    assert req2["prompt_ids"][: s.store_len] == req["prompt_ids"]

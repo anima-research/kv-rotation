@@ -71,6 +71,12 @@ class Turn:
     end: int
     evicted: bool = False
     original_tokens: int = 0
+    # reroll alternatives (texts; the koto-rack ◀ n/total ▶ pattern) — the
+    # ACTIVE variant is always `text` / the ledger tokens
+    variants: list = field(default_factory=list)
+    active_variant: int = 0
+    # server-attached extras (e.g. A/B control reply) — display only
+    meta: dict = field(default_factory=dict)
 
     def live_tokens(self) -> int:
         return 0 if self.evicted else self.end - self.start
@@ -217,10 +223,29 @@ class Session:
             closing = self._stop_ids + self._encode("\n")
         else:
             closing = list(self._delim)
-        return self._append_turn(
+        turn = self._append_turn(
             "model", self.bot_name, text.strip(),
             prefix_ids=list(prompt_tail_ids), body_ids=ids + closing,
         )
+        turn.variants = [turn.text]
+        turn.active_variant = 0
+        return turn
+
+    def set_tail_variant(self, text: str) -> Turn:
+        """Replace the LAST model turn's active text (variant switch). The
+        replaced ledger suffix is beyond the store prefix, so exactness holds
+        (the new suffix simply gets recomputed at the next prefill)."""
+        if not self.turns or self.turns[-1].role != "model":
+            raise LedgerError("no tail model turn to switch")
+        old = self.turns[-1]
+        variants = list(old.variants)
+        meta = dict(old.meta)
+        self.pop_model_turn()
+        t = self.add_model_turn(self._encode(text), text, self.reply_prefill_ids())
+        t.variants = variants
+        t.active_variant = variants.index(text) if text in variants else 0
+        t.meta = meta
+        return t
 
     def reply_prefill_ids(self) -> list[int]:
         """The generation prefill appended after the transcript."""
@@ -455,6 +480,8 @@ class Session:
                     "index": t.index, "role": t.role, "speaker": t.speaker,
                     "text": t.text, "evicted": t.evicted,
                     "live_tokens": t.live_tokens(), "original_tokens": t.original_tokens,
+                    "variants": list(t.variants), "active_variant": t.active_variant,
+                    "meta": dict(t.meta),
                 }
                 for t in self.turns
             ],

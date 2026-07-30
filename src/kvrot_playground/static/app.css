@@ -119,3 +119,19 @@ header h1 span { color: var(--green); }
 .event-row { color: var(--text-dim); border-left: 2px solid var(--orange); padding: 3px 8px; }
 .event-row b { color: var(--text); }
 .event-row .mode { color: var(--cyan); }
+
+/* ── A/B + variants + branches (koto-rack atomics) ────────────────── */
+.send-col { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.ab-toggle { font-size: 11px; color: var(--text-dim); display: flex; gap: 4px; align-items: center; cursor: pointer; }
+.abrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.abrow .col { border: 1px solid var(--border); padding: 6px 10px; }
+.abrow .col .col-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+.abrow .col.steered { border-left: 2px solid var(--green); }
+.abrow .col.steered .col-label { color: var(--green); }
+.abrow .col.controlc { border-left: 2px solid var(--yellow); opacity: 0.9; }
+.abrow .col.controlc .col-label { color: var(--yellow); }
+.abrow .body { white-space: pre-wrap; line-height: 1.45; }
+.vnav { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
+.vnav button { background: none; border: 1px solid var(--border); color: var(--text-dim); cursor: pointer; font-family: inherit; font-size: 10px; padding: 0 5px; }
+.vnav .vcount { font-size: 10px; color: var(--text-dim); }
+#branch-select { background: var(--elevated); border: 1px solid var(--border); color: var(--text); font-family: inherit; font-size: 11px; padding: 2px 4px; max-width: 150px; }
