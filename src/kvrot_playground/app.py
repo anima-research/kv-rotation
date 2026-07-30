@@ -188,6 +188,64 @@ async def send_turn(sid: str, body: TurnBody):
         return {"reply": result.text.strip(), "stats": stats.__dict__, "state": s.view()}
 
 
+class SeedBody(BaseModel):
+    template: str = "archive"
+    doc_index: int | None = None
+    target_tokens: int = Field(19000, ge=500, le=28000)
+    depths: list[float] = Field(default_factory=lambda: [0.05, 0.35, 0.65, 0.9])
+    rng_seed: int = 1234
+
+
+@app.get("/api/seed_options")
+async def seed_options():
+    from kvrot_playground.seeding import TEMPLATES, load_docs
+
+    docs = load_docs(os.environ.get("KVROT_DATA", "data/eval_docs.jsonl"))
+    return {
+        "templates": [{"id": k, "label": v["label"]} for k, v in TEMPLATES.items()],
+        "docs": [
+            {k: d[k] for k in ("index", "approx_tokens", "preview")} for d in docs
+        ],
+    }
+
+
+@app.post("/api/sessions/{sid}/seed")
+async def seed_session(sid: str, body: SeedBody):
+    """Seed a (fresh) session: preamble + document chunks as REAL chat turns
+    with planted needles. Turns are evictable — early needles honestly
+    disappear as the session rolls."""
+    from kvrot_playground.seeding import build_seed, load_docs, seed_preamble
+
+    s = _session(sid)
+    if _locks[sid].locked():
+        raise HTTPException(409, "a turn is in flight")
+    if len(s.turns) > 1:
+        raise HTTPException(409, "seed only into a fresh session (use New session)")
+    docs = load_docs(os.environ.get("KVROT_DATA", "data/eval_docs.jsonl"))
+    texts = [d["text"] for d in docs]
+    idx = body.doc_index if body.doc_index is not None else max(
+        range(len(texts)), key=lambda i: len(texts[i])
+    )
+    # replace the default system turn's text is not possible post-hoc; fresh
+    # sessions are cheap — rebuild with the template preamble
+    tok = _get_tokenizer()
+    fresh = Session(
+        tok, bot_name=BOT_NAME, user_name=s.user_name, config=s.config,
+        preamble=seed_preamble(body.template, BOT_NAME),
+        bank_path=s.bank_path, session_id=s.session_id,
+    )
+    try:
+        needles = build_seed(
+            fresh, template=body.template, doc_text=texts[idx],
+            target_tokens=body.target_tokens, depths=body.depths,
+            rng_seed=body.rng_seed,
+        )
+    except (ValueError, KeyError) as e:
+        raise HTTPException(400, str(e)) from e
+    _sessions[sid] = fresh
+    return {"needles": needles, "state": fresh.view()}
+
+
 @app.post("/api/sessions/{sid}/evict")
 async def force_evict(sid: str):
     """Force one eviction round now (as if the budget were breached). The

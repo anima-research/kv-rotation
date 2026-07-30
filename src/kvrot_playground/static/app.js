@@ -141,7 +141,7 @@ function render(state, stats) {
                    `<div class="body"></div>`;
     // collapse huge seeded preambles: show head + tail around a fold note
     const body = el.querySelector(".body");
-    if (t.role === "system" && t.text.length > 900) {
+    if (t.text.length > 1200) {
       body.textContent =
         t.text.slice(0, 400) +
         `\n\n··· [${toks} tokens of seeded context collapsed] ···\n\n` +
@@ -217,6 +217,55 @@ qs("#chat-input").addEventListener("keydown", (e) => {
     qs("#chat-form").requestSubmit();
   }
 });
+async function loadSeedOptions() {
+  try {
+    const o = await api("/api/seed_options");
+    qs("#seed-template").innerHTML = o.templates
+      .map((t) => `<option value="${t.id}">${t.label}</option>`).join("");
+    qs("#seed-doc").innerHTML =
+      `<option value="">longest doc</option>` +
+      o.docs.map((d) =>
+        `<option value="${d.index}">#${d.index} ~${d.approx_tokens} tok — ${d.preview}</option>`
+      ).join("");
+  } catch {}
+}
+
+async function seedSession() {
+  if (!session || busy) return;
+  busy = true;
+  qs("#seed-btn").disabled = true;
+  qs("#stats-strip").innerHTML = "seeding… (tokenizing + building turns)";
+  try {
+    const docSel = qs("#seed-doc").value;
+    const out = await api(`/api/sessions/${session.session_id}/seed`, {
+      method: "POST",
+      body: JSON.stringify({
+        template: qs("#seed-template").value,
+        doc_index: docSel === "" ? null : parseInt(docSel, 10),
+        target_tokens: parseInt(qs("#seed-tokens").value, 10),
+      }),
+    });
+    session = out.state;
+    render(session, null);
+    qs("#needle-list").innerHTML = out.needles
+      .map((n) =>
+        `<div class="event-row">d=${n.depth} <b>${n.code}</b> — ` +
+        `<span class="mode">${n.probe}</span></div>`
+      ).join("");
+    qs("#stats-strip").innerHTML =
+      `seeded <b>${session.live_tokens}</b> tokens as evictable turns — ` +
+      `probe the planted facts as the session rolls`;
+  } catch (e) {
+    qs("#stats-strip").innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+  } finally {
+    busy = false;
+    qs("#seed-btn").disabled = false;
+  }
+}
+
+qs("#seed-btn").addEventListener("click", seedSession);
+loadSeedOptions();
+
 qs("#apply-btn").addEventListener("click", applyConfig);
 qs("#evict-btn").addEventListener("click", forceEvict);
 qs("#new-btn").addEventListener("click", newSession);

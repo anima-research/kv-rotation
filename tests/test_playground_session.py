@@ -211,3 +211,21 @@ def test_chat_mode_framing_and_stops():
 def test_auto_mode_falls_back_to_prefill_without_template():
     s = make_session()
     assert s.mode == "prefill"
+
+
+def test_build_seed_appends_evictable_turns():
+    from kvrot_playground.seeding import build_seed
+
+    s = make_session(budget=4096)
+    doc = " ".join(f"w{i}" for i in range(3000))
+    needles = build_seed(
+        s, template="archive", doc_text=doc, target_tokens=1000,
+        depths=[0.1, 0.8], chunk_tokens=200,
+    )
+    assert len(needles) == 2 and all(n["code"] for n in needles)
+    roles = {t.role for t in s.turns[1:]}
+    assert roles == {"user", "model"}  # seeded as real, evictable turns
+    assert s.live_ids and len(s.turns) > 4
+    # codes present in ledger text
+    joined = " ".join(t.text for t in s.turns)
+    assert all(n["code"] in joined for n in needles)

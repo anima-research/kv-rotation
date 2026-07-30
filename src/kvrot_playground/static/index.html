@@ -85,6 +85,17 @@
     </div>
 
     <div class="card">
+      <h2>Seed context</h2>
+      <div class="controls">
+        <label>template <select id="seed-template"></select></label>
+        <label>document <select id="seed-doc"></select></label>
+        <label>tokens <input type="number" id="seed-tokens" value="19000" min="500" max="28000" step="500"></label>
+      </div>
+      <div class="btn-row"><button class="btn btn-accent" id="seed-btn">Seed session</button></div>
+      <div class="events" id="needle-list" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
       <h2>Evictions</h2>
       <div class="events" id="events-list"><div class="chat-empty">none yet</div></div>
     </div>
