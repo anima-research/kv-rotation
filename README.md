@@ -66,8 +66,14 @@ Turn-aligned eviction on templated multi-turn chat exposed a real failure mode
 (low-entropy chat scaffolding reads near-seam contamination the mechanism
 otherwise hides) that recovers on naturalized dialogue — see the ledger below
 for the full story, including the open threads it motivates (selective
-recompute, importance-aware eviction on the MoE target, a production
-tensor-parallel serving port).
+recompute, importance-aware eviction on the MoE target).
+
+**The serving-stack port landed (exp12):** an out-of-tree vLLM v1 KV connector
+(`src/kvrot_vllm/`, zero vLLM source changes) runs the rotation inside vLLM at
+tensor-parallel scale — rotated-vs-HF-oracle parity **below cross-stack kernel
+noise** on the 389B target (TP=8, 8k ctx), a rotated turn costing ~1 s wall on
+a stack decoding at ~100 tok/s. Remaining production work is in-place paged
+rotation (no extract/re-inject round trip).
 
 **→ [`RESULTS.md`](RESULTS.md) is the full results ledger**, one entry per
 experiment (exp01–exp11): goal, setup, numbers, verdict.
@@ -86,9 +92,15 @@ src/kvrot/
   natural.py      # naturalized-dialogue eval support, device-placement helpers
   sigbridge.py    # cached-replay bridge into an external signature-extraction
                    # instrument (exp11) — computational-character comparison
+src/kvrot_vllm/
+  core.py         # vLLM-free connector logic: session KV store, plan
+                   # application, slot math, paged-layout adapters (CPU-tested)
+  connector.py    # out-of-tree vLLM v1 KV connector (KvrotConnector):
+                   # save -> evict+re-rotate (per TP rank) -> inject
 tests/            # CPU correctness tests (rotation math, surgery, eviction,
-                   # metrics, config, data, chat, sigbridge) — no model needed
-experiments/      # runnable measurement scripts (exp01–exp11, GPU-backed)
+                   # metrics, config, data, chat, sigbridge, vllm-core) — no
+                   # model needed
+experiments/      # runnable measurement scripts (exp01–exp12, GPU-backed)
 notes/            # feasibility synthesis, design docs, chronological journals
 ```
 

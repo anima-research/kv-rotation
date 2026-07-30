@@ -49,8 +49,18 @@ class RoPESpec(BaseModel):
     @classmethod
     def from_hf_config(cls, cfg: Any) -> "RoPESpec":
         head_dim = getattr(cfg, "head_dim", None) or (cfg.hidden_size // cfg.num_attention_heads)
-        theta = float(getattr(cfg, "rope_theta", 10000.0))
-        scaling = getattr(cfg, "rope_scaling", None)
+        # transformers 5.x relocates rope params INTO the rope dict (and may call
+        # it rope_parameters); 5.x configs also *raise* on unset attrs, so a
+        # top-level getattr default silently misreads theta (e.g. Llama-3.2:
+        # rope_scaling["rope_theta"]=500000 but cfg.rope_theta absent -> the old
+        # code built a theta=10000 table, 0.13 max error — caught by exp12 gate 2).
+        scaling = getattr(cfg, "rope_scaling", None) or getattr(cfg, "rope_parameters", None)
+        theta_raw = None
+        if isinstance(scaling, dict):
+            theta_raw = scaling.get("rope_theta")
+        if theta_raw is None:
+            theta_raw = getattr(cfg, "rope_theta", None)
+        theta = float(theta_raw) if theta_raw is not None else 10000.0
         if not scaling:
             return cls(head_dim=head_dim, theta=theta, scaling_type="none")
         rtype = scaling.get("rope_type", scaling.get("type"))

@@ -346,6 +346,61 @@ now has evidence at the level of next-token distributions, factual recall,
 
 ---
 
+## Phase 5 — serving-stack port (vLLM v1 KV-connector)
+
+### exp12 — rotation inside vLLM, gated against the HF oracle
+
+**Goal.** Move rotation from HF `past_key_values` surgery into the production
+serving stack (vLLM 0.16, v1 engine) without modifying vLLM: an out-of-tree
+**KV connector** (`src/kvrot_vllm/`) saves a session's KV at prefill, applies
+eviction + per-layer-gated re-rotation between requests (inside each TP
+worker, on its own shard), and re-injects the rotated cache so the next
+request prefills only the new suffix. Design + validation evidence:
+`notes/design-vllm-playground.md`.
+
+**Correctness gates** (chosen-token logprobs + greedy agreement vs the proven
+HF path; full-distribution KL is not obtainable from the serving API):
+
+| Gate | Llama-3.2-3B (ctx 1024, evict 256) | Trinity-Preview, TP=8 (ctx 8192, evict 2048) |
+|---|---|---|
+| 0 — save→re-inject round trip | 48/48 tokens identical, MAD 2.7e-3 | 48/48 identical, MAD 2.2e-5 |
+| 1 — cross-stack noise floor | 2.3e-3, 100% greedy match | 2.6e-5, 100% |
+| 2 — rotated parity (the verdict) | 4.2e-3 = **1.8× floor**, 100% match | **1.3e-5 = 0.51× floor**, 100% match |
+
+At 389B the vLLM rotation path measures **below cross-stack kernel noise**;
+the clean-recompute yardstick sits ~8× further from its own oracle (1.1e-4)
+than rotation does. A **rotated turn costs ~1.05 s wall** at 8k ctx on the
+serving stack (surgery + inject + 16-token tail prefill + 48-token decode),
+with ~100 tok/s decode behind it — replacing what the HF-side measurements
+priced at 20–29 s of recompute.
+
+**Bugs the gates caught** (both would have silently corrupted results):
+transformers 5.x relocates `rope_theta` into the rope dict — the config-only
+table builder read θ=10000 for Llama-3.2's θ=500000, failing gate 2 at 365×
+floor while passing every static-table sanity check (fix + regression tests +
+a connector-init cross-check against transformers' own table builder); and
+the FlashInfer paged layout makes the reshape-based scatter used by vLLM's
+example connector a silent no-op write (fixed with direct advanced indexing;
+both layouts covered by CPU tests).
+
+**Serving constraints established for hybrid-window models under any KV
+connector** (trinity = 45×SWA + 15×NoPE-full): with a connector configured
+vLLM disables hybrid KV management, putting all layers in one KV-cache group
+— FlashInfer refuses mixed windows per group, so **`--attention-backend
+FLASH_ATTN` is required** (applies windows per layer at kernel-call time);
+plus `--no-enable-prefix-caching` (injected rotated blocks must not re-enter
+the token-hash pool) and, on this 8×B200 setup, `--disable-custom-all-reduce`
+(warmup kernel crash; NCCL fallback identical). Packaged in
+`scripts/exp12_trinity_gates_job.sh`.
+
+**Verdict.** The mechanism ports to the production stack at zero measurable
+cost: Tier 0+1 rotation now runs *inside* vLLM at tensor-parallel scale,
+gated bit-tight against the HF reference that produced every result above.
+This is the substrate for an interactive rolling-context playground and the
+first half of the in-place production port.
+
+---
+
 ## Open threads
 
 - **Tier 3 (selective recompute)** — not yet built. Motivated concretely by
@@ -353,11 +408,12 @@ now has evidence at the level of next-token distributions, factual recall,
   ~7% of keys) rather than the whole shortened prefix.
 - **Tier 2 on Trinity** — needs `output_attentions` support in afmoe's forward
   pass; unconfirmed whether it threads through.
-- **Production (vLLM/TP) port** — every timing ratio so far (~560–1000×) is HF
-  naive model-parallelism (one GPU active at a time); the production-honest
-  ratio under tensor parallelism is unmeasured. Rotation's own cost (tens of
-  ms, mostly an unoptimized Python loop) is expected to shrink further under a
-  fused kernel regardless of the recompute baseline.
+- **In-place production port** — exp12's connector does extract→rotate→inject
+  between requests (~1 s/turn at 8k, dominated by unoptimized copies); the
+  end-state is in-place paged-block rotation (a Δ-RoPE kernel over
+  `slot_mapping`), which the connector's machinery and gates now de-risk.
+  The old HF-naive timing ratios (~560–1000×) are superseded by the honest
+  serving-stack number above.
 - **exp10 stage 2** (clean two-party, Trinity-authored dialogue) — blocked on
   a Trinity chat-format generation pathology (repetition-loop degeneration in
   deep multi-turn chat completions); not required for the naturalization
