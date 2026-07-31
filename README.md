@@ -76,7 +76,9 @@ a stack decoding at ~100 tok/s. Remaining production work is in-place paged
 rotation (no extract/re-inject round trip).
 
 **→ [`RESULTS.md`](RESULTS.md) is the full results ledger**, one entry per
-experiment (exp01–exp11): goal, setup, numbers, verdict.
+experiment (exp01–exp12): goal, setup, numbers, verdict.
+**→ [`docs/API.md`](docs/API.md)** — the cache-control API contract (raw vLLM
+`kv_transfer_params` protocol + the playground REST API).
 
 ## Layout
 
